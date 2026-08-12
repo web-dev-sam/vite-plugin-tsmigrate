@@ -1,0 +1,57 @@
+{
+  "name": "vite-plugin-tsmigrate",
+  "version": "0.0.0",
+  "description": "A minimal, well-structured Vite 8 plugin (hello world) built with Vite+.",
+  "keywords": [
+    "hello-world",
+    "plugin",
+    "typescript",
+    "vite",
+    "vite-plugin"
+  ],
+  "homepage": "https://github.com/you/vite-plugin-tsmigrate#readme",
+  "bugs": {
+    "url": "https://github.com/you/vite-plugin-tsmigrate/issues"
+  },
+  "license": "MIT",
+  "author": "Your Name <you@example.com>",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/you/vite-plugin-tsmigrate.git"
+  },
+  "files": [
+    "dist"
+  ],
+  "type": "module",
+  "main": "./dist/index.mjs",
+  "module": "./dist/index.mjs",
+  "types": "./dist/index.d.mts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.mts",
+      "default": "./dist/index.mjs"
+    },
+    "./package.json": "./package.json"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "build": "vp pack",
+    "dev": "vp pack --watch",
+    "test": "vp test",
+    "check": "vp check",
+    "prepublishOnly": "vp run build"
+  },
+  "devDependencies": {
+    "@types/node": "^26.1.1",
+    "bumpp": "^11.1.0",
+    "typescript": "^7.0.2",
+    "vite": "^8.0.0",
+    "vite-plus": "^0.2.4"
+  },
+  "peerDependencies": {
+    "vite": "^8.0.0"
+  },
+  "packageManager": "pnpm@11.21.0"
+}
