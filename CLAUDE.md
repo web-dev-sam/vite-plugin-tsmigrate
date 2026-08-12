@@ -10,8 +10,9 @@ A minimal, well-structured **Vite 8** plugin (hello world), developed with the
 - The plugin registers a virtual module `virtual:tsmigrate` that re-exports a
   configurable `greeting`, demonstrating the `resolveId`/`load` pair, the
   NUL-prefixed (`\0`) resolved-id convention, `configResolved` (greeting log),
-  and `configureServer` (logs the server URL by patching `server.printUrls` —
-  a "listening" handler would race `resolvedUrls`).
+  and `configureServer`/`configurePreviewServer` (log the dev/preview URL by
+  patching `server.printUrls` — a "listening" handler would race
+  `resolvedUrls`).
 - Built to `dist/` with `vp pack` (tsdown): ESM (`index.mjs`) + types (`index.d.mts`).
 
 ## Project conventions
@@ -35,9 +36,9 @@ A minimal, well-structured **Vite 8** plugin (hello world), developed with the
 - `src/index.ts` — the plugin (public API).
 - `tests/index.test.ts` — integration tests against a real Vite server.
 - `vite.config.ts` — Vite+ config (pack/lint/fmt).
-- `playground/` — private Vue 3 counter app (pnpm workspace member);
-  `serve.ts` starts a programmatic dev server (`createServer` → `listen` →
-  `printUrls`). Run with `vp run play` from the root.
+- `playground/` — private Vue 3 counter app (pnpm workspace member) run via
+  the standard Vite CLI: `vp dev`, `vp build && vp preview` (see
+  `.vscode/tasks.json` tasks `Dev`/`Prod`).
 - `.vscode/` — tracked editor recommendations + settings (Oxc formatter).
 
 <!--VITE PLUS START-->

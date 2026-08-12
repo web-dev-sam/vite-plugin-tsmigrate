@@ -1,4 +1,4 @@
-import type { Plugin } from "vite";
+import type { Plugin, PreviewServer, ViteDevServer } from "vite";
 
 /**
  * Options for {@link tsmigrate}.
@@ -14,7 +14,7 @@ export interface TsMigrateOptions {
 
   /**
    * Log through Vite's logger: the greeting once the config is resolved, and
-   * the dev server URL once it is listening.
+   * the server URL once the dev or preview server is listening.
    *
    * @default true
    */
@@ -29,13 +29,28 @@ export const VIRTUAL_MODULE_ID = "virtual:tsmigrate";
 // https://vite.dev/guide/api-plugin#virtual-modules-convention
 const RESOLVED_VIRTUAL_MODULE_ID = `\0${VIRTUAL_MODULE_ID}`;
 
+// `server.resolvedUrls` is only populated after the server starts listening,
+// so an `httpServer` "listening" handler would race it. Patching `printUrls`
+// is the ecosystem convention: the CLI (dev and preview) and programmatic
+// servers call it once the URLs exist.
+function patchPrintUrls(server: ViteDevServer | PreviewServer): void {
+  const printUrls = server.printUrls.bind(server);
+  server.printUrls = () => {
+    printUrls();
+    const url = server.resolvedUrls?.local[0] ?? server.resolvedUrls?.network[0];
+    if (url) {
+      server.config.logger.info(`  [vite-plugin-tsmigrate] serving ${url}`);
+    }
+  };
+}
+
 /**
  * A minimal, idiomatic Vite 8 plugin — the "hello world" of Vite plugins.
  *
  * It registers a virtual module (`virtual:tsmigrate`) that re-exports a
  * configurable greeting, demonstrating the `resolveId`/`load` pair with the
- * NUL-prefixed resolved-id convention, plus `configResolved` and
- * `configureServer` for logging.
+ * NUL-prefixed resolved-id convention, plus `configResolved`,
+ * `configureServer`, and `configurePreviewServer` for logging.
  *
  * @example
  * ```ts
@@ -68,21 +83,15 @@ export function tsmigrate(options: TsMigrateOptions = {}): Plugin {
     },
 
     configureServer(server) {
-      if (!logOnStart) {
-        return;
+      if (logOnStart) {
+        patchPrintUrls(server);
       }
-      // `server.resolvedUrls` is only populated after `listen()` resolves, so
-      // an `httpServer` "listening" handler would race it. Patching
-      // `printUrls` is the ecosystem convention: both the CLI and
-      // programmatic servers call it once the URLs exist.
-      const printUrls = server.printUrls.bind(server);
-      server.printUrls = () => {
-        printUrls();
-        const url = server.resolvedUrls?.local[0] ?? server.resolvedUrls?.network[0];
-        if (url) {
-          server.config.logger.info(`  [vite-plugin-tsmigrate] serving ${url}`);
-        }
-      };
+    },
+
+    configurePreviewServer(server) {
+      if (logOnStart) {
+        patchPrintUrls(server);
+      }
     },
 
     resolveId(id) {

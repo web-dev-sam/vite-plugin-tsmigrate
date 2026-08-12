@@ -2,13 +2,25 @@
   "version": "2.0.0",
   "tasks": [
     {
-      "label": "Play",
-      "detail": "Playground dev server (createServer + URL log)",
+      "label": "Dev",
+      "detail": "Playground dev server (vite dev)",
       "type": "shell",
-      "command": "node playground/serve.ts",
+      "command": "vp dev",
+      "options": { "cwd": "${workspaceFolder}/playground" },
       "isBackground": true,
       "problemMatcher": [],
       "icon": { "id": "play", "color": "terminal.ansiGreen" },
+      "presentation": { "panel": "dedicated", "reveal": "always" }
+    },
+    {
+      "label": "Prod",
+      "detail": "Playground production build + preview",
+      "type": "shell",
+      "command": "vp build && vp preview",
+      "options": { "cwd": "${workspaceFolder}/playground" },
+      "isBackground": true,
+      "problemMatcher": [],
+      "icon": { "id": "rocket", "color": "terminal.ansiMagenta" },
       "presentation": { "panel": "dedicated", "reveal": "always" }
     },
     {
@@ -19,16 +31,6 @@
       "problemMatcher": [],
       "group": { "kind": "test", "isDefault": true },
       "icon": { "id": "beaker", "color": "terminal.ansiBlue" },
-      "presentation": { "panel": "dedicated" }
-    },
-    {
-      "label": "Check",
-      "detail": "vp check --fix (fmt + lint + types)",
-      "type": "shell",
-      "command": "vp check --fix",
-      "problemMatcher": [],
-      "group": { "kind": "build", "isDefault": true },
-      "icon": { "id": "check-all", "color": "terminal.ansiYellow" },
       "presentation": { "panel": "dedicated" }
     }
   ]
