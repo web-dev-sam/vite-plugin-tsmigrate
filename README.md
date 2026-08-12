@@ -73,14 +73,19 @@ It runs through the standard Vite CLI, exactly like a real project:
 
 ```bash
 cd playground
-vp dev                  # dev server
-vp build && vp preview  # production build served by vite preview
+vp dev   # dev server — typical colored Vite output
 ```
 
-In both modes the plugin appends its own
-`[vite-plugin-tsmigrate] serving <url>` line after Vite's URL block
-(`configureServer` / `configurePreviewServer`). VSCode users: the tracked
-`.vscode/tasks.json` exposes these as the `Dev` and `Prod` tasks.
+The plugin appends its own line to Vite's URL block, styled exactly like
+Vite's output (green `➜`, cyan URL, via picocolors — Vite's own color lib):
+
+```
+  ➜  Local:   http://localhost:5173/
+  ➜  tsmigrate: http://localhost:5173/
+```
+
+The same line appears under `vite preview` (`configurePreviewServer`).
+VSCode users: run the `Dev` task from the tracked `.vscode/tasks.json`.
 
 ## License
 

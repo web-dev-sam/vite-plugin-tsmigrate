@@ -1,3 +1,4 @@
+import pc from "picocolors";
 import type { Plugin, PreviewServer, ViteDevServer } from "vite";
 
 /**
@@ -39,7 +40,12 @@ function patchPrintUrls(server: ViteDevServer | PreviewServer): void {
     printUrls();
     const url = server.resolvedUrls?.local[0] ?? server.resolvedUrls?.network[0];
     if (url) {
-      server.config.logger.info(`  [vite-plugin-tsmigrate] serving ${url}`);
+      // Match Vite's own URL block styling: green arrow, bold label, cyan URL
+      // with a bold port (picocolors is Vite's own color lib).
+      const colored = pc.cyan(
+        url.replace(/:(\d+)\//, (_: string, port: string) => `:${pc.bold(port)}/`),
+      );
+      server.config.logger.info(`  ${pc.green("\u279C")}  ${pc.bold("tsmigrate")}: ${colored}`);
     }
   };
 }
@@ -78,7 +84,7 @@ export function tsmigrate(options: TsMigrateOptions = {}): Plugin {
 
     configResolved(config) {
       if (logOnStart) {
-        config.logger.info(`[vite-plugin-tsmigrate] ${greeting}`);
+        config.logger.info(`${pc.cyan("[vite-plugin-tsmigrate]")} ${greeting}`);
       }
     },
 

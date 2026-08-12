@@ -13,6 +13,10 @@ function captureLogger(messages: string[]) {
   return logger;
 }
 
+// Log lines may carry ANSI color codes depending on the environment, so match
+// loosely around the label and URL.
+const SERVING_LINE = /tsmigrate.*http:\/\/localhost.*\d+/;
+
 test("returns a plugin using the conventional vite-plugin-* name", () => {
   expect(tsmigrate().name).toBe("vite-plugin-tsmigrate");
 });
@@ -59,9 +63,7 @@ test("logs the dev server URL through printUrls once listening", async () => {
   await server.listen();
   try {
     server.printUrls();
-    expect(messages.join("\n")).toMatch(
-      /\[vite-plugin-tsmigrate\] serving http:\/\/localhost:\d+\//,
-    );
+    expect(messages.join("\n")).toMatch(SERVING_LINE);
   } finally {
     await server.close();
   }
@@ -82,9 +84,7 @@ test("logs the preview server URL in production preview", async () => {
 
   try {
     server.printUrls();
-    expect(messages.join("\n")).toMatch(
-      /\[vite-plugin-tsmigrate\] serving http:\/\/localhost:\d+\//,
-    );
+    expect(messages.join("\n")).toMatch(SERVING_LINE);
   } finally {
     await server.close();
   }

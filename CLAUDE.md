@@ -37,8 +37,9 @@ A minimal, well-structured **Vite 8** plugin (hello world), developed with the
 - `tests/index.test.ts` — integration tests against a real Vite server.
 - `vite.config.ts` — Vite+ config (pack/lint/fmt).
 - `playground/` — private Vue 3 counter app (pnpm workspace member) run via
-  the standard Vite CLI: `vp dev`, `vp build && vp preview` (see
-  `.vscode/tasks.json` tasks `Dev`/`Prod`).
+  the standard Vite CLI: `vp dev` (see `.vscode/tasks.json` task `Dev`).
+- **Log styling:** startup lines mimic Vite's URL block (green `➜`, cyan URL)
+  using `picocolors`, Vite's own color lib — keep new log lines consistent.
 - `.vscode/` — tracked editor recommendations + settings (Oxc formatter).
 
 <!--VITE PLUS START-->

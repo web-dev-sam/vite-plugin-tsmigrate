@@ -13,17 +13,6 @@
       "presentation": { "panel": "dedicated", "reveal": "always" }
     },
     {
-      "label": "Prod",
-      "detail": "Playground production build + preview",
-      "type": "shell",
-      "command": "vp build && vp preview",
-      "options": { "cwd": "${workspaceFolder}/playground" },
-      "isBackground": true,
-      "problemMatcher": [],
-      "icon": { "id": "rocket", "color": "terminal.ansiMagenta" },
-      "presentation": { "panel": "dedicated", "reveal": "always" }
-    },
-    {
       "label": "Test",
       "detail": "vp test (Vitest)",
       "type": "shell",
@@ -31,6 +20,16 @@
       "problemMatcher": [],
       "group": { "kind": "test", "isDefault": true },
       "icon": { "id": "beaker", "color": "terminal.ansiBlue" },
+      "presentation": { "panel": "dedicated" }
+    },
+    {
+      "label": "Check",
+      "detail": "vp check --fix (fmt + lint + types)",
+      "type": "shell",
+      "command": "vp check --fix",
+      "problemMatcher": [],
+      "group": { "kind": "build", "isDefault": true },
+      "icon": { "id": "check-all", "color": "terminal.ansiYellow" },
       "presentation": { "panel": "dedicated" }
     }
   ]
