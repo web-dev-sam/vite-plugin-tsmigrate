@@ -8,11 +8,13 @@ A minimal, well-structured **Vite 8** plugin (hello world), developed with the
 - A **distributable Vite plugin**, not an app. `src/index.ts` exports a
   `tsmigrate(options)` factory returning a Vite `Plugin`, plus a `default` export.
 - The plugin registers a virtual module `virtual:tsmigrate` that re-exports a
-  configurable `greeting`, demonstrating the `resolveId`/`load` pair, the
-  NUL-prefixed (`\0`) resolved-id convention, `configResolved` (greeting log),
-  and `configureServer`/`configurePreviewServer` (log the dev/preview URL by
-  patching `server.printUrls` — a "listening" handler would race
-  `resolvedUrls`).
+  configurable `greeting`, demonstrating the `resolveId`/`load` pair and the
+  NUL-prefixed (`\0`) resolved-id convention, plus `configResolved` (greeting
+  log) and `configureServer`, which hosts the plugin's **own tool server**
+  (`node:http`) on `toolPort` (default `7357`, ephemeral fallback; dev-only;
+  skipped in middleware mode; closed with the dev server) and appends its URL
+  to Vite's block by patching `server.printUrls` (a "listening" handler would
+  race `resolvedUrls`).
 - Built to `dist/` with `vp pack` (tsdown): ESM (`index.mjs`) + types (`index.d.mts`).
 
 ## Project conventions
@@ -26,8 +28,8 @@ A minimal, well-structured **Vite 8** plugin (hello world), developed with the
 - **Virtual modules:** keep the public id (`virtual:tsmigrate`) and its resolved
   id (`\0virtual:tsmigrate`) in sync via the exported `VIRTUAL_MODULE_ID`.
 - **Tests** live in `tests/` and exercise the plugin inside a real Vite dev
-  server (`createServer` + `transformRequest`) — that server run is the proof
-  the plugin works, so keep it green.
+  server (`createServer` + `transformRequest`, plus fetching the tool page) —
+  that server run is the proof the plugin works, so keep it green.
 - **Playground consumes the plugin from source** (`../src/index.ts`), not the
   built `dist/` — instant dev loop; packaging is validated by `vp pack` + attw.
 

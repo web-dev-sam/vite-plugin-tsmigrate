@@ -1,7 +1,4 @@
-import { mkdtemp, writeFile } from "node:fs/promises";
-import { tmpdir } from "node:os";
-import { join } from "node:path";
-import { createLogger, createServer, preview } from "vite";
+import { createLogger, createServer } from "vite";
 import { expect, test } from "vite-plus/test";
 import { tsmigrate, VIRTUAL_MODULE_ID } from "../src/index.ts";
 
@@ -13,10 +10,6 @@ function captureLogger(messages: string[]) {
   return logger;
 }
 
-// Log lines may carry ANSI color codes depending on the environment, so match
-// loosely around the label and URL.
-const SERVING_LINE = /tsmigrate.*http:\/\/localhost.*\d+/;
-
 test("returns a plugin using the conventional vite-plugin-* name", () => {
   expect(tsmigrate().name).toBe("vite-plugin-tsmigrate");
 });
@@ -25,7 +18,7 @@ test("serves the greeting through the virtual module in a real Vite server", asy
   const server = await createServer({
     configFile: false,
     logLevel: "silent",
-    plugins: [tsmigrate({ greeting: "Hi from tests", logOnStart: false })],
+    plugins: [tsmigrate({ greeting: "Hi from tests", logOnStart: false, toolPort: 0 })],
   });
 
   try {
@@ -40,7 +33,7 @@ test("falls back to the default greeting when no options are given", async () =>
   const server = await createServer({
     configFile: false,
     logLevel: "silent",
-    plugins: [tsmigrate()],
+    plugins: [tsmigrate({ logOnStart: false, toolPort: 0 })],
   });
 
   try {
@@ -51,41 +44,34 @@ test("falls back to the default greeting when no options are given", async () =>
   }
 });
 
-test("logs the dev server URL through printUrls once listening", async () => {
+test("hosts its own tool on a separate port and closes it with the dev server", async () => {
   const messages: string[] = [];
   const server = await createServer({
     configFile: false,
     customLogger: captureLogger(messages),
-    plugins: [tsmigrate()],
+    plugins: [tsmigrate({ toolPort: 0 })],
     server: { port: 0 },
   });
 
   await server.listen();
-  try {
-    server.printUrls();
-    expect(messages.join("\n")).toMatch(SERVING_LINE);
-  } finally {
-    await server.close();
-  }
-});
+  server.printUrls();
 
-test("logs the preview server URL in production preview", async () => {
-  const outDir = await mkdtemp(join(tmpdir(), "tsmigrate-preview-"));
-  await writeFile(join(outDir, "index.html"), "<!doctype html>ok\n");
+  const appUrl = server.resolvedUrls?.local[0];
+  const match = messages.join("\n").match(/tsmigrate.*?(http:\/\/localhost:(\d+)\/)/);
+  expect(match).not.toBeNull();
+  const toolUrl = match![1];
 
-  const messages: string[] = [];
-  const server = await preview({
-    configFile: false,
-    customLogger: captureLogger(messages),
-    plugins: [tsmigrate()],
-    build: { outDir },
-    preview: { port: 0 },
-  });
+  // The tool is unrelated to the user's app server — different port.
+  expect(toolUrl).not.toBe(appUrl);
 
-  try {
-    server.printUrls();
-    expect(messages.join("\n")).toMatch(SERVING_LINE);
-  } finally {
-    await server.close();
-  }
+  // The tool actually serves its page.
+  const res = await fetch(toolUrl);
+  expect(res.status).toBe(200);
+  const body = await res.text();
+  expect(body).toContain("vite-plugin-tsmigrate");
+  expect(body).toContain("Hello, Vite 8!");
+
+  // Lifecycle: closing the dev server also shuts the tool down.
+  await server.close();
+  await expect(fetch(toolUrl)).rejects.toThrow();
 });

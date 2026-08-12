@@ -1,13 +1,14 @@
+import { createServer as createHttpServer, type Server } from "node:http";
 import pc from "picocolors";
-import type { Plugin, PreviewServer, ViteDevServer } from "vite";
+import type { Plugin, ViteDevServer } from "vite";
 
 /**
  * Options for {@link tsmigrate}.
  */
 export interface TsMigrateOptions {
   /**
-   * Message exposed by the `virtual:tsmigrate` module and logged when the Vite
-   * config is resolved.
+   * Message exposed by the `virtual:tsmigrate` module, shown on the tool page,
+   * and logged when the Vite config is resolved.
    *
    * @default "Hello, Vite 8!"
    */
@@ -15,11 +16,20 @@ export interface TsMigrateOptions {
 
   /**
    * Log through Vite's logger: the greeting once the config is resolved, and
-   * the server URL once the dev or preview server is listening.
+   * the tool server URL once the dev server is listening.
    *
    * @default true
    */
   logOnStart?: boolean;
+
+  /**
+   * Port for the plugin's own tool server (dev only). When the port is taken,
+   * an ephemeral port is used instead. Pass `0` to always use an ephemeral
+   * port.
+   *
+   * @default 7357
+   */
+  toolPort?: number;
 }
 
 /** Import specifier consumers use to load the generated module. */
@@ -30,24 +40,26 @@ export const VIRTUAL_MODULE_ID = "virtual:tsmigrate";
 // https://vite.dev/guide/api-plugin#virtual-modules-convention
 const RESOLVED_VIRTUAL_MODULE_ID = `\0${VIRTUAL_MODULE_ID}`;
 
-// `server.resolvedUrls` is only populated after the server starts listening,
-// so an `httpServer` "listening" handler would race it. Patching `printUrls`
-// is the ecosystem convention: the CLI (dev and preview) and programmatic
-// servers call it once the URLs exist.
-function patchPrintUrls(server: ViteDevServer | PreviewServer): void {
-  const printUrls = server.printUrls.bind(server);
-  server.printUrls = () => {
-    printUrls();
-    const url = server.resolvedUrls?.local[0] ?? server.resolvedUrls?.network[0];
-    if (url) {
-      // Match Vite's own URL block styling: green arrow, bold label, cyan URL
-      // with a bold port (picocolors is Vite's own color lib).
-      const colored = pc.cyan(
-        url.replace(/:(\d+)\//, (_: string, port: string) => `:${pc.bold(port)}/`),
-      );
-      server.config.logger.info(`  ${pc.green("\u279C")}  ${pc.bold("tsmigrate")}: ${colored}`);
+// Bind the tool server, falling back to an ephemeral port when the preferred
+// one is taken. Resolves with the actually bound port.
+function listenTool(tool: Server, port: number): Promise<number> {
+  const { promise, resolve, reject } = Promise.withResolvers<number>();
+  tool.once("error", (err: NodeJS.ErrnoException) => {
+    if (err.code !== "EADDRINUSE") {
+      reject(err);
+      return;
     }
-  };
+    tool.once("error", reject);
+    tool.listen(0, "127.0.0.1", () => {
+      const addr = tool.address();
+      resolve(typeof addr === "object" && addr ? addr.port : port);
+    });
+  });
+  tool.listen(port, "127.0.0.1", () => {
+    const addr = tool.address();
+    resolve(typeof addr === "object" && addr ? addr.port : port);
+  });
+  return promise;
 }
 
 /**
@@ -55,8 +67,9 @@ function patchPrintUrls(server: ViteDevServer | PreviewServer): void {
  *
  * It registers a virtual module (`virtual:tsmigrate`) that re-exports a
  * configurable greeting, demonstrating the `resolveId`/`load` pair with the
- * NUL-prefixed resolved-id convention, plus `configResolved`,
- * `configureServer`, and `configurePreviewServer` for logging.
+ * NUL-prefixed resolved-id convention. During dev it also hosts its own tool
+ * page on a separate port (like vite-plugin-inspect or devtools plugins) and
+ * appends that URL to Vite's startup block.
  *
  * @example
  * ```ts
@@ -77,7 +90,7 @@ function patchPrintUrls(server: ViteDevServer | PreviewServer): void {
  * ```
  */
 export function tsmigrate(options: TsMigrateOptions = {}): Plugin {
-  const { greeting = "Hello, Vite 8!", logOnStart = true } = options;
+  const { greeting = "Hello, Vite 8!", logOnStart = true, toolPort = 7357 } = options;
 
   return {
     name: "vite-plugin-tsmigrate",
@@ -88,15 +101,59 @@ export function tsmigrate(options: TsMigrateOptions = {}): Plugin {
       }
     },
 
-    configureServer(server) {
-      if (logOnStart) {
-        patchPrintUrls(server);
+    async configureServer(server: ViteDevServer) {
+      // No standalone http server in middleware mode — no place to anchor the
+      // tool's lifecycle (and printUrls is meaningless there).
+      if (!server.httpServer) {
+        return;
       }
-    },
 
-    configurePreviewServer(server) {
+      const escaped = greeting
+        .replaceAll("&", "&amp;")
+        .replaceAll("<", "&lt;")
+        .replaceAll(">", "&gt;");
+
+      // The plugin's own tool, unrelated to the user's app server — served
+      // from a dedicated port like vite-plugin-inspect / devtools plugins.
+      const tool = createHttpServer((_req, res) => {
+        const appUrl = server.resolvedUrls?.local[0];
+        res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
+        res.end(`<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>tsmigrate tool</title>
+<style>main{font-family:system-ui,sans-serif;max-width:32rem;margin:4rem auto}</style>
+</head>
+<body><main>
+<h1>vite-plugin-tsmigrate</h1>
+<p>${escaped}</p>
+<p>App server: ${appUrl ? `<a href="${appUrl}">${appUrl}</a>` : "(not listening yet)"}</p>
+</main></body>
+</html>
+`);
+      });
+
+      const port = await listenTool(tool, toolPort);
+      const toolUrl = `http://localhost:${port}/`;
+
+      // Tie the tool's lifecycle to the dev server (also covers restarts).
+      server.httpServer.once("close", () => {
+        tool.close();
+      });
+
       if (logOnStart) {
-        patchPrintUrls(server);
+        // `server.resolvedUrls` is only populated after `listen()` resolves,
+        // so an `httpServer` "listening" handler would race it. Patching
+        // `printUrls` is the ecosystem convention: the CLI and programmatic
+        // servers call it once the URLs exist. Styling matches Vite's own URL
+        // block (picocolors is Vite's own color lib).
+        const printUrls = server.printUrls.bind(server);
+        server.printUrls = () => {
+          printUrls();
+          const colored = pc.cyan(
+            toolUrl.replace(/:(\d+)\//, (_: string, p: string) => `:${pc.bold(p)}/`),
+          );
+          server.config.logger.info(`  ${pc.green("\u279C")}  ${pc.bold("tsmigrate")}: ${colored}`);
+        };
       }
     },
 
