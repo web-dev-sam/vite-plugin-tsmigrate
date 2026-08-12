@@ -1,5 +1,10 @@
+import { existsSync } from "node:fs";
 import { createServer as createHttpServer, type Server } from "node:http";
+import { createRequire } from "node:module";
+import { join, relative } from "node:path";
+import { fileURLToPath } from "node:url";
 import pc from "picocolors";
+import sirv from "sirv";
 import type { Plugin, ViteDevServer } from "vite";
 
 /**
@@ -7,7 +12,7 @@ import type { Plugin, ViteDevServer } from "vite";
  */
 export interface TsMigrateOptions {
   /**
-   * Message exposed by the `virtual:tsmigrate` module, shown on the tool page,
+   * Message exposed by the `virtual:tsmigrate` module, shown in the tool UI,
    * and logged when the Vite config is resolved.
    *
    * @default "Hello, Vite 8!"
@@ -16,7 +21,7 @@ export interface TsMigrateOptions {
 
   /**
    * Log through Vite's logger: the greeting once the config is resolved, and
-   * the tool server URL once the dev server is listening.
+   * the tool URL once the dev server is listening.
    *
    * @default true
    */
@@ -30,6 +35,18 @@ export interface TsMigrateOptions {
    * @default 7357
    */
   toolPort?: number;
+}
+
+/** Payload served by the tool server's `/api/diagnostics` endpoint. */
+export interface Diagnostics {
+  greeting: string;
+  appUrl: string | null;
+  root: string;
+  /** Vue version resolved from the user's app, or `null` when not found. */
+  vueVersion: string | null;
+  /** `.vue` module ids currently in the dev server's module graph. */
+  vueModules: string[];
+  plugins: string[];
 }
 
 /** Import specifier consumers use to load the generated module. */
@@ -62,14 +79,46 @@ function listenTool(tool: Server, port: number): Promise<number> {
   return promise;
 }
 
+// Inspect the user's app through the dev server: resolved Vue version, the
+// .vue modules Vite has processed so far, and the active plugin list.
+function collectDiagnostics(server: ViteDevServer, greeting: string): Diagnostics {
+  const root = server.config.root;
+
+  let vueVersion: string | null = null;
+  try {
+    const requireFromApp = createRequire(join(root, "package.json"));
+    const pkg: unknown = requireFromApp("vue/package.json");
+    if (pkg && typeof pkg === "object" && "version" in pkg && typeof pkg.version === "string") {
+      vueVersion = pkg.version;
+    }
+  } catch {
+    vueVersion = null;
+  }
+
+  const vueModules = [...server.environments.client.moduleGraph.idToModuleMap.keys()]
+    .filter((id) => id.endsWith(".vue"))
+    .map((id) => relative(root, id))
+    .sort();
+
+  return {
+    greeting,
+    appUrl: server.resolvedUrls?.local[0] ?? null,
+    root,
+    vueVersion,
+    vueModules,
+    plugins: server.config.plugins.map((p) => p.name),
+  };
+}
+
 /**
- * A minimal, idiomatic Vite 8 plugin — the "hello world" of Vite plugins.
+ * A minimal, idiomatic Vite 8 plugin — the "hello world" of devtool-style
+ * Vite plugins (vite-plugin-inspect, vue-devtools, …).
  *
- * It registers a virtual module (`virtual:tsmigrate`) that re-exports a
- * configurable greeting, demonstrating the `resolveId`/`load` pair with the
- * NUL-prefixed resolved-id convention. During dev it also hosts its own tool
- * page on a separate port (like vite-plugin-inspect or devtools plugins) and
- * appends that URL to Vite's startup block.
+ * It registers a virtual module (`virtual:tsmigrate`) demonstrating the
+ * `resolveId`/`load` pair with the NUL-prefixed resolved-id convention.
+ * During dev it hosts its **own Vue application** — prebuilt into
+ * `dist/client` and shipped with the package — on a separate port, which
+ * diagnoses the user's app via the `/api/diagnostics` endpoint.
  *
  * @example
  * ```ts
@@ -80,13 +129,6 @@ function listenTool(tool: Server, port: number): Promise<number> {
  * export default defineConfig({
  *   plugins: [tsmigrate({ greeting: "Hello from my app!" })],
  * });
- * ```
- *
- * @example
- * ```ts
- * // anywhere in your app
- * import { greeting } from "virtual:tsmigrate";
- * console.log(greeting);
  * ```
  */
 export function tsmigrate(options: TsMigrateOptions = {}): Plugin {
@@ -108,28 +150,38 @@ export function tsmigrate(options: TsMigrateOptions = {}): Plugin {
         return;
       }
 
-      const escaped = greeting
-        .replaceAll("&", "&amp;")
-        .replaceAll("<", "&lt;")
-        .replaceAll(">", "&gt;");
+      // Locate the prebuilt tool UI: `client/` next to the built plugin
+      // (dist/index.mjs + dist/client) or, when the plugin runs from source,
+      // the repo's dist/client.
+      const clientDir = ["client/", "../dist/client/"]
+        .map((rel) => fileURLToPath(new URL(rel, import.meta.url)))
+        .find((dir) => existsSync(join(dir, "index.html")));
+      const serveClient = clientDir ? sirv(clientDir, { dev: true, single: true }) : null;
 
-      // The plugin's own tool, unrelated to the user's app server — served
+      // The plugin's own Vue app, unrelated to the user's app server — served
       // from a dedicated port like vite-plugin-inspect / devtools plugins.
-      const tool = createHttpServer((_req, res) => {
-        const appUrl = server.resolvedUrls?.local[0];
+      const tool = createHttpServer((req, res) => {
+        if (req.url?.split("?")[0] === "/api/diagnostics") {
+          res.writeHead(200, {
+            "content-type": "application/json; charset=utf-8",
+            "cache-control": "no-store",
+          });
+          res.end(JSON.stringify(collectDiagnostics(server, greeting)));
+          return;
+        }
+        if (serveClient) {
+          serveClient(req, res, () => {
+            res.statusCode = 404;
+            res.end("Not found");
+          });
+          return;
+        }
         res.writeHead(200, { "content-type": "text/html; charset=utf-8" });
-        res.end(`<!doctype html>
-<html lang="en">
-<head><meta charset="utf-8"><title>tsmigrate tool</title>
-<style>main{font-family:system-ui,sans-serif;max-width:32rem;margin:4rem auto}</style>
-</head>
-<body><main>
-<h1>vite-plugin-tsmigrate</h1>
-<p>${escaped}</p>
-<p>App server: ${appUrl ? `<a href="${appUrl}">${appUrl}</a>` : "(not listening yet)"}</p>
-</main></body>
-</html>
-`);
+        res.end(
+          "<!doctype html><title>tsmigrate tool</title>" +
+            "<p>Tool UI not built yet — run <code>vp run build</code> in the plugin repo.</p>" +
+            '<p>The diagnostics API works regardless: <a href="/api/diagnostics">/api/diagnostics</a></p>',
+        );
       });
 
       const port = await listenTool(tool, toolPort);

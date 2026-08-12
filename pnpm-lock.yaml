@@ -11,6 +11,9 @@ importers:
       picocolors:
         specifier: ^1.1.1
         version: 1.1.1
+      sirv:
+        specifier: ^3.0.2
+        version: 3.0.2
     devDependencies:
       '@types/node':
         specifier: ^26.1.1
@@ -29,6 +32,22 @@ importers:
         version: 0.2.8(@types/node@26.2.0)(jiti@2.7.0)(typescript@7.0.2)(vite@8.2.1(@types/node@26.2.0)(jiti@2.7.0)(yaml@2.9.0))(yaml@2.9.0)
 
   playground:
+    dependencies:
+      vue:
+        specifier: ^3.5.41
+        version: 3.5.41(typescript@7.0.2)
+    devDependencies:
+      '@types/node':
+        specifier: ^26.1.1
+        version: 26.2.0
+      '@vitejs/plugin-vue':
+        specifier: ^6.0.8
+        version: 6.0.8(vite@8.2.1(@types/node@26.2.0)(jiti@2.7.0)(yaml@2.9.0))(vue@3.5.41(typescript@7.0.2))
+      vite:
+        specifier: ^8.0.0
+        version: 8.2.1(@types/node@26.2.0)(jiti@2.7.0)(yaml@2.9.0)
+
+  tool:
     dependencies:
       vue:
         specifier: ^3.5.41

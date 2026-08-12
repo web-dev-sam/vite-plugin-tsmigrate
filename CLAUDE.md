@@ -10,12 +10,17 @@ A minimal, well-structured **Vite 8** plugin (hello world), developed with the
 - The plugin registers a virtual module `virtual:tsmigrate` that re-exports a
   configurable `greeting`, demonstrating the `resolveId`/`load` pair and the
   NUL-prefixed (`\0`) resolved-id convention, plus `configResolved` (greeting
-  log) and `configureServer`, which hosts the plugin's **own tool server**
-  (`node:http`) on `toolPort` (default `7357`, ephemeral fallback; dev-only;
-  skipped in middleware mode; closed with the dev server) and appends its URL
-  to Vite's block by patching `server.printUrls` (a "listening" handler would
-  race `resolvedUrls`).
-- Built to `dist/` with `vp pack` (tsdown): ESM (`index.mjs`) + types (`index.d.mts`).
+  log) and `configureServer`, which hosts the plugin's **own Vue app** (the
+  tool UI from `tool/`, prebuilt into `dist/client`, served with `sirv`) on
+  `toolPort` (default `7357`, ephemeral fallback; dev-only; skipped in
+  middleware mode; closed with the dev server). The tool diagnoses the user's
+  app via `/api/diagnostics` (Vue version via `createRequire` from the app
+  root, `.vue` modules from `server.environments.client.moduleGraph`, plugin
+  list). The tool URL is appended to Vite's block by patching
+  `server.printUrls` (a "listening" handler would race `resolvedUrls`).
+- Built with `vp run build`: `vp pack` (tsdown → `dist/index.mjs` +
+  `dist/index.d.mts`) then `vite build tool` (tool UI → `dist/client`). The
+  npm package ships all of `dist/`.
 
 ## Project conventions
 
@@ -32,6 +37,9 @@ A minimal, well-structured **Vite 8** plugin (hello world), developed with the
   that server run is the proof the plugin works, so keep it green.
 - **Playground consumes the plugin from source** (`../src/index.ts`), not the
   built `dist/` — instant dev loop; packaging is validated by `vp pack` + attw.
+- **Tool UI is prebuilt, not dev-served:** the plugin serves whatever is in
+  `dist/client` (fallback page when absent). After editing `tool/`, run
+  `vp run build`. The tool bundles its own Vue — independent of the app's.
 
 ## Layout
 
@@ -40,6 +48,7 @@ A minimal, well-structured **Vite 8** plugin (hello world), developed with the
 - `vite.config.ts` — Vite+ config (pack/lint/fmt).
 - `playground/` — private Vue 3 counter app (pnpm workspace member) run via
   the standard Vite CLI: `vp dev` (see `.vscode/tasks.json` task `Dev`).
+- `tool/` — the plugin's own Vue app (diagnostics UI), built to `dist/client`.
 - **Log styling:** startup lines mimic Vite's URL block (green `➜`, cyan URL)
   using `picocolors`, Vite's own color lib — keep new log lines consistent.
 - `.vscode/` — tracked editor recommendations + settings (Oxc formatter).

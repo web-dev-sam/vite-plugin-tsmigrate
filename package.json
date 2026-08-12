@@ -37,14 +37,15 @@
     "access": "public"
   },
   "scripts": {
-    "build": "vp pack",
+    "build": "vp pack && vp exec vite build tool",
     "dev": "vp pack --watch",
     "test": "vp test",
     "check": "vp check",
     "prepublishOnly": "vp run build"
   },
   "dependencies": {
-    "picocolors": "^1.1.1"
+    "picocolors": "^1.1.1",
+    "sirv": "^3.0.2"
   },
   "devDependencies": {
     "@types/node": "^26.1.1",
