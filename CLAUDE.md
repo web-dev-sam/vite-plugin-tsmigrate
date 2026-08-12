@@ -5,22 +5,57 @@ A minimal, well-structured **Vite 8** plugin (hello world), developed with the
 
 ## What this package is
 
-- A **distributable Vite plugin**, not an app. `src/index.ts` exports a
-  `tsmigrate(options)` factory returning a Vite `Plugin`, plus a `default` export.
-- The plugin registers a virtual module `virtual:tsmigrate` that re-exports a
-  configurable `greeting`, demonstrating the `resolveId`/`load` pair and the
-  NUL-prefixed (`\0`) resolved-id convention, plus `configResolved` (greeting
-  log) and `configureServer`, which hosts the plugin's **own Vue app** (the
-  tool UI from `tool/`, prebuilt into `dist/client`, served with `sirv`) on
-  `toolPort` (default `7357`, ephemeral fallback; dev-only; skipped in
-  middleware mode; closed with the dev server). The tool diagnoses the user's
-  app via `/api/diagnostics` (Vue version via `createRequire` from the app
-  root, `.vue` modules from `server.environments.client.moduleGraph`, plugin
-  list). The tool URL is appended to Vite's block by patching
-  `server.printUrls` (a "listening" handler would race `resolvedUrls`).
-- Built with `vp run build`: `vp pack` (tsdown → `dist/index.mjs` +
-  `dist/index.d.mts`) then `vite build tool` (tool UI → `dist/client`). The
-  npm package ships all of `dist/`.
+- A **distributable devtool-style Vite plugin** (à la vite-plugin-inspect /
+  vue-devtools), not an app. `src/index.ts` exports a `tsmigrate(options)`
+  factory returning a Vite `Plugin`, plus a `default` export.
+- Ships a virtual module (`virtual:tsmigrate`) and, during dev, hosts its
+  **own Vue app** (`tool/`, prebuilt into `dist/client`, served with `sirv`)
+  on `toolPort` (default `7357`, ephemeral fallback; dev-only; skipped in
+  middleware mode; closed with the dev server).
+- The tool analyses the user's app: **component import graph** (nodes =
+  `.vue` files, edges collapse pass-through barrels), **LoC**, and **git
+  blame lines-per-author** per component, served via `/api/graph` with
+  progressive per-analyzer status. `/api/diagnostics` is the environment
+  summary. Edges exist for a future d3 graph view.
+- Built with `vp run build`: `vp pack` (tsdown → `dist/index.mjs` + types)
+  then `vite build tool` (tool UI → `dist/client`). npm ships all of `dist/`.
+
+## Architecture (dependency direction is enforced, acyclic)
+
+- `src/index.ts` — public API + hook wiring ONLY; read this first.
+- `src/shared/types.ts` — plugin ↔ tool UI wire contract; environment-neutral;
+  the tool imports these types directly (type-only) — NEVER re-declare them.
+- `src/analysis/` — **pure core, no `vite` imports, no process spawning**;
+  capabilities injected via `AnalysisHost` (`host.ts`): resolver, fs, git.
+  - `graph.ts` — entry discovery + BFS crawl; barrel-collapsing edges.
+  - `imports.ts` — regex import scanner (designated swap point: oxc-parser).
+  - `analyzers/` — the extension point: `Analyzer<T>` with `cost: "inline" |
+"queued"`; currently `loc` and `blame`.
+  - `cache.ts` — FactStore keyed (file, analyzer); invalidate per file
+    (watcher) or per kind (blame on HEAD move).
+  - `engine.ts` — orchestration: crawl + schedule + bounded queue (4) +
+    monotonic `version`; snapshots are progressive, never blocking.
+- `src/server/` —
+  - `vite-adapter.ts` — the ONLY module touching `ViteDevServer` (resolver
+    from `environments.client.pluginContainer`, watcher → invalidation, git
+    runner). Vite API drift lands here.
+  - `routes.ts` — HTTP → engine mapping; the transport seam (`?since=` cheap
+    probes now; birpc/WS later replaces this file + `tool/src/api/client.ts`).
+  - `static.ts`, `diagnostics.ts`, `index.ts` (lifecycle).
+- `src/constants.ts`, `options.ts` (defaults live ONLY in `resolveOptions`),
+  `virtual.ts`, `log.ts` (Vite-styled output via picocolors — keep new lines
+  consistent).
+
+## Where changes land
+
+| Change              | Location                                          |
+| ------------------- | ------------------------------------------------- |
+| New option          | `options.ts` (type + default in `resolveOptions`) |
+| New metric/analyzer | `analysis/analyzers/*.ts` + engine wiring         |
+| New API endpoint    | `server/routes.ts` → logic in analysis/           |
+| New Vite hook       | own top-level module, wired in `index.ts`         |
+| Vite API usage      | `server/vite-adapter.ts` ONLY                     |
+| Wire shape          | `shared/types.ts` (server + tool consume it)      |
 
 ## Project conventions
 
@@ -28,30 +63,19 @@ A minimal, well-structured **Vite 8** plugin (hello world), developed with the
   `import type { Plugin } from "vite"` and `vite` is declared as a
   `peerDependency` (`^8`) — because consumers use plain Vite, not Vite+. Only
   test/config utilities are imported from `vite-plus` (e.g. `vite-plus/test`).
-- **Plugin naming:** the `name` field MUST stay `vite-plugin-tsmigrate` (Vite
-  ecosystem convention); the npm package name matches.
-- **Virtual modules:** keep the public id (`virtual:tsmigrate`) and its resolved
-  id (`\0virtual:tsmigrate`) in sync via the exported `VIRTUAL_MODULE_ID`.
-- **Tests** live in `tests/` and exercise the plugin inside a real Vite dev
-  server (`createServer` + `transformRequest`, plus fetching the tool page) —
-  that server run is the proof the plugin works, so keep it green.
-- **Playground consumes the plugin from source** (`../src/index.ts`), not the
-  built `dist/` — instant dev loop; packaging is validated by `vp pack` + attw.
-- **Tool UI is prebuilt, not dev-served:** the plugin serves whatever is in
-  `dist/client` (fallback page when absent). After editing `tool/`, run
-  `vp run build`. The tool bundles its own Vue — independent of the app's.
-
-## Layout
-
-- `src/index.ts` — the plugin (public API).
-- `tests/index.test.ts` — integration tests against a real Vite server.
-- `vite.config.ts` — Vite+ config (pack/lint/fmt).
-- `playground/` — private Vue 3 counter app (pnpm workspace member) run via
-  the standard Vite CLI: `vp dev` (see `.vscode/tasks.json` task `Dev`).
-- `tool/` — the plugin's own Vue app (diagnostics UI), built to `dist/client`.
-- **Log styling:** startup lines mimic Vite's URL block (green `➜`, cyan URL)
-  using `picocolors`, Vite's own color lib — keep new log lines consistent.
-- `.vscode/` — tracked editor recommendations + settings (Oxc formatter).
+- **Plugin naming:** the `name` field MUST stay `vite-plugin-tsmigrate`.
+- **Relative imports use explicit `.ts` extensions** (nodenext resolution).
+- **Tests:** `tests/analysis.test.ts` exercises the pure core with in-memory
+  fixtures (no dev server — the point of the DI boundary);
+  `tests/index.test.ts` boots real Vite servers, including a full graph e2e
+  against `playground/`. Keep both green.
+- **Playground consumes the plugin from source** (`../src/index.ts`) —
+  instant dev loop; packaging is validated by `vp pack` + attw.
+- **Tool UI is prebuilt, not dev-served:** the plugin serves `dist/client`
+  (fallback page when absent). After editing `tool/`, run `vp run build`.
+  The tool bundles its own Vue — independent of the user's app.
+- `playground/` — private Vue 3 counter app; run via `vp dev` (VSCode task
+  `Dev`). `.vscode/` is git-tracked (settings, extensions, tasks).
 
 <!--VITE PLUS START-->
 

@@ -79,9 +79,13 @@ vp dev   # dev server — typical colored Vite output
 
 During dev the plugin hosts **its own Vue app** — the tool UI in `tool/`,
 prebuilt into `dist/client` and shipped with the package — on a separate
-port, unrelated to the app server. The tool diagnoses the user's app via
-`/api/diagnostics` (detected Vue version, loaded `.vue` modules, plugin
-list). Its URL is appended to Vite's block, styled exactly like Vite's
+port, unrelated to the app server. The tool analyses the user's app and
+shows every component with its file path, LoC, and git blame
+(lines per author), plus the import relations between components (the data
+behind a future d3 graph view). Data flows over a small JSON API:
+`GET /api/graph` (progressive results while analyzers run; cheap
+`?since=<version>` probes once complete) and `GET /api/diagnostics`.
+Its URL is appended to Vite's block, styled exactly like Vite's
 output (green `➜`, cyan URL, via picocolors — Vite's own color lib):
 
 ```
