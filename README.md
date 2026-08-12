@@ -48,10 +48,10 @@ declare module "virtual:tsmigrate" {
 
 ## Options
 
-| Option       | Type      | Default            | Description                                                          |
-| ------------ | --------- | ------------------ | -------------------------------------------------------------------- |
-| `greeting`   | `string`  | `"Hello, Vite 8!"` | Message exposed by `virtual:tsmigrate` and logged on config resolve. |
-| `logOnStart` | `boolean` | `true`             | Log the greeting through Vite's logger when the config is resolved.  |
+| Option       | Type      | Default            | Description                                                           |
+| ------------ | --------- | ------------------ | --------------------------------------------------------------------- |
+| `greeting`   | `string`  | `"Hello, Vite 8!"` | Message exposed by `virtual:tsmigrate` and logged on config resolve.  |
+| `logOnStart` | `boolean` | `true`             | Log the greeting on config resolve and the server URL once listening. |
 
 ## Development
 
@@ -64,6 +64,21 @@ vp test      # run the test suite (Vitest)
 vp check     # format + lint + type-check
 vp build     # bundle the library to dist/ (tsdown)
 ```
+
+## Playground
+
+`playground/` hosts a Vue 3 counter app consuming the plugin from source
+(`../src/index.ts`) — edits to the plugin apply instantly, no rebuild loop.
+
+```bash
+vp run play        # programmatic server: createServer() + listen() + printUrls()
+# or: cd playground && vp dev
+```
+
+`playground/serve.ts` uses Vite's
+[JavaScript API](https://vite.dev/guide/api-javascript) and logs the resolved
+URL on startup; the plugin itself appends its own
+`[vite-plugin-tsmigrate] serving <url>` line via its `configureServer` hook.
 
 ## License
 

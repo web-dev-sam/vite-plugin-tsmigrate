@@ -1,0 +1,16 @@
+{
+  "name": "tsmigrate-playground",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "serve": "node serve.ts"
+  },
+  "dependencies": {
+    "vue": "^3.5.41"
+  },
+  "devDependencies": {
+    "@types/node": "^26.1.1",
+    "@vitejs/plugin-vue": "^6.0.8",
+    "vite": "^8.0.0"
+  }
+}

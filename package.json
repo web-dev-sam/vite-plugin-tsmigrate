@@ -41,6 +41,7 @@
     "dev": "vp pack --watch",
     "test": "vp test",
     "check": "vp check",
+    "play": "node playground/serve.ts",
     "prepublishOnly": "vp run build"
   },
   "devDependencies": {

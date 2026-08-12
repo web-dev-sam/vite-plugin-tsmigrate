@@ -13,7 +13,8 @@ export interface TsMigrateOptions {
   greeting?: string;
 
   /**
-   * Log the greeting through Vite's logger once the config is resolved.
+   * Log through Vite's logger: the greeting once the config is resolved, and
+   * the dev server URL once it is listening.
    *
    * @default true
    */
@@ -32,8 +33,9 @@ const RESOLVED_VIRTUAL_MODULE_ID = `\0${VIRTUAL_MODULE_ID}`;
  * A minimal, idiomatic Vite 8 plugin — the "hello world" of Vite plugins.
  *
  * It registers a virtual module (`virtual:tsmigrate`) that re-exports a
- * configurable greeting, demonstrating the `resolveId`/`load` pair and the
- * NUL-prefixed resolved-id convention shared across the Vite ecosystem.
+ * configurable greeting, demonstrating the `resolveId`/`load` pair with the
+ * NUL-prefixed resolved-id convention, plus `configResolved` and
+ * `configureServer` for logging.
  *
  * @example
  * ```ts
@@ -63,6 +65,24 @@ export function tsmigrate(options: TsMigrateOptions = {}): Plugin {
       if (logOnStart) {
         config.logger.info(`[vite-plugin-tsmigrate] ${greeting}`);
       }
+    },
+
+    configureServer(server) {
+      if (!logOnStart) {
+        return;
+      }
+      // `server.resolvedUrls` is only populated after `listen()` resolves, so
+      // an `httpServer` "listening" handler would race it. Patching
+      // `printUrls` is the ecosystem convention: both the CLI and
+      // programmatic servers call it once the URLs exist.
+      const printUrls = server.printUrls.bind(server);
+      server.printUrls = () => {
+        printUrls();
+        const url = server.resolvedUrls?.local[0] ?? server.resolvedUrls?.network[0];
+        if (url) {
+          server.config.logger.info(`  [vite-plugin-tsmigrate] serving ${url}`);
+        }
+      };
     },
 
     resolveId(id) {
