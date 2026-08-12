@@ -1,0 +1,35 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "Play",
+      "detail": "Playground dev server (createServer + URL log)",
+      "type": "shell",
+      "command": "node playground/serve.ts",
+      "isBackground": true,
+      "problemMatcher": [],
+      "icon": { "id": "play", "color": "terminal.ansiGreen" },
+      "presentation": { "panel": "dedicated", "reveal": "always" }
+    },
+    {
+      "label": "Test",
+      "detail": "vp test (Vitest)",
+      "type": "shell",
+      "command": "vp test",
+      "problemMatcher": [],
+      "group": { "kind": "test", "isDefault": true },
+      "icon": { "id": "beaker", "color": "terminal.ansiBlue" },
+      "presentation": { "panel": "dedicated" }
+    },
+    {
+      "label": "Check",
+      "detail": "vp check --fix (fmt + lint + types)",
+      "type": "shell",
+      "command": "vp check --fix",
+      "problemMatcher": [],
+      "group": { "kind": "build", "isDefault": true },
+      "icon": { "id": "check-all", "color": "terminal.ansiYellow" },
+      "presentation": { "panel": "dedicated" }
+    }
+  ]
+}
