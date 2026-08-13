@@ -30,6 +30,7 @@ const showRings = defineModel<boolean>("showRings", { required: true });
 const showBlame = defineModel<boolean>("showBlame", { required: true });
 const includeTs = defineModel<boolean>("includeTs", { required: true });
 const showLinks = defineModel<boolean>("showLinks", { required: true });
+const highlightLinks = defineModel<boolean>("highlightLinks", { required: true });
 const search = defineModel<string>("search", { required: true });
 const blameGreen = defineModel<boolean>("blameGreen", { required: true });
 const blameRed = defineModel<boolean>("blameRed", { required: true });
@@ -129,6 +130,11 @@ function depthTitle(d: DepthRow): string {
           content="Draw every import edge among the shown components. Off by default for performance; edges otherwise appear only for a selected node's subtree."
         >
           <Checkbox v-model="showLinks">show import links</Checkbox>
+        </Tooltip>
+        <Tooltip
+          content="Highlight every import edge among the shown components in blue at once — like hovering a node, but for all of them. Implies drawing the links."
+        >
+          <Checkbox v-model="highlightLinks">highlight all links</Checkbox>
         </Tooltip>
       </div>
     </Section>

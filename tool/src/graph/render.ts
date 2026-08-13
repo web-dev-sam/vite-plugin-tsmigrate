@@ -44,6 +44,12 @@ export interface Controls {
    * node's subtree. Turning this on opts back into the full edge overlay.
    */
   showLinks: boolean;
+  /**
+   * Highlight every shown import edge in the hover-blue, as if hovering all
+   * nodes at once. Implies drawing the full edge overlay (like `showLinks`),
+   * but paints the edges with the emphasis colour instead of the muted grey.
+   */
+  highlightLinks: boolean;
 }
 
 /** One row of the per-depth progress table (highest depth first). */
@@ -186,6 +192,7 @@ export function initGraph(opts: InitOptions): GraphController {
     blameGreen: true,
     blameRed: false,
     showLinks: false,
+    highlightLinks: false,
   };
 
   // Current scene, rebuilt whenever the graph (vue vs vue+ts) changes.
@@ -237,8 +244,9 @@ export function initGraph(opts: InitOptions): GraphController {
   function visibleLinks(): RLink[] {
     if (!current) return [];
     // Default (no focus, links off): draw nothing. With a focus, restrict to
-    // that node's subtree; with "show links" on, every currently-shown edge.
-    if (!controls.showLinks && focus === null) return [];
+    // that node's subtree; with "show links" or "highlight links" on, every
+    // currently-shown edge.
+    if (!controls.showLinks && !controls.highlightLinks && focus === null) return [];
     const inFocus = focus?.set ?? null;
     return current.links.filter((l) => {
       const s = l.source as RNode;
@@ -256,11 +264,19 @@ export function initGraph(opts: InitOptions): GraphController {
       .selectAll<SVGLineElement, RLink>("line")
       .data(visibleLinks(), (l) => `${linkId(l.source)}\n${linkId(l.target)}`)
       .join("line")
-      .attr("class", "link")
+      .attr("class", linkClass());
+    // Position each edge; x/y attrs land on the same selection.
+    linkSel
       .attr("x1", (d) => (d.source as RNode).x!)
       .attr("y1", (d) => (d.source as RNode).y!)
       .attr("x2", (d) => (d.target as RNode).x!)
       .attr("y2", (d) => (d.target as RNode).y!);
+  }
+
+  // Base class for the link overlay: hover-blue when "highlight links" is on,
+  // otherwise the muted default. Hover then toggles `.hl`/`.dim` on top.
+  function linkClass(): string {
+    return controls.highlightLinks ? "link hl" : "link";
   }
 
   function tooltipHtml(d: RNode): string {
@@ -595,7 +611,9 @@ export function initGraph(opts: InitOptions): GraphController {
         tooltip.style.top = `${e.clientY + 14}px`;
       })
       .on("mouseout", () => {
-        linkSel!.classed("hl", false).classed("dim", false);
+        // Restore the baseline: keep every edge blue when "highlight links" is
+        // on, otherwise clear the hover emphasis entirely.
+        linkSel!.classed("hl", controls.highlightLinks).classed("dim", false);
         // Restore the search baseline (clears dimming when no search is active).
         applySearch();
         tooltip.style.opacity = "0";

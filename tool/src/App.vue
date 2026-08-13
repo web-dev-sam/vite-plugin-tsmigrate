@@ -26,6 +26,7 @@ const view = reactive({
   showBlame: false,
   includeTs: false,
   showLinks: false,
+  highlightLinks: false,
   search: "",
   blameGreen: true,
   blameRed: false,
@@ -41,6 +42,7 @@ const controls = computed<Controls>(() => ({
   blameGreen: view.blameGreen,
   blameRed: view.blameRed,
   showLinks: view.showLinks,
+  highlightLinks: view.highlightLinks,
 }));
 
 // `include TS files` swaps the component-only graph for the full module graph.
@@ -119,6 +121,7 @@ onUnmounted(() => {
     v-model:show-blame="view.showBlame"
     v-model:include-ts="view.includeTs"
     v-model:show-links="view.showLinks"
+    v-model:highlight-links="view.highlightLinks"
     v-model:search="view.search"
     v-model:blame-green="view.blameGreen"
     v-model:blame-red="view.blameRed"
