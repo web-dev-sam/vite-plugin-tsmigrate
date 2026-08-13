@@ -35,6 +35,36 @@
       "presentation": { "panel": "dedicated", "reveal": "always" }
     },
     {
+      "label": "Tool UI (HMR)",
+      "detail": "Tool UI dev server with hot reload. Open http://localhost:7358 — it proxies /api to a running playground's plugin server on :7357, so start a 'Dev' task first (or use 'Dev + Tool UI').",
+      "type": "shell",
+      "command": "vp exec vite tool --port 7358",
+      "options": { "cwd": "${workspaceFolder}" },
+      "isBackground": true,
+      "problemMatcher": [],
+      "icon": { "id": "flame", "color": "terminal.ansiMagenta" },
+      "presentation": { "panel": "dedicated", "reveal": "always" }
+    },
+    {
+      "label": "Dev + Tool UI (HMR)",
+      "detail": "One click: runs the Vben playground (serves /api on :7357) AND the Tool UI HMR server together. Edit tool/src/* and see it live at http://localhost:7358.",
+      "dependsOn": ["Dev", "Tool UI (HMR)"],
+      "dependsOrder": "parallel",
+      "problemMatcher": [],
+      "icon": { "id": "rocket", "color": "terminal.ansiMagenta" },
+      "presentation": { "reveal": "always" }
+    },
+    {
+      "label": "Build Tool UI",
+      "detail": "Rebuild the shipped tool bundle into dist/client. Use for the no-HMR loop: run this, then refresh the plugin's tool page on :7357.",
+      "type": "shell",
+      "command": "vp exec vite build tool",
+      "options": { "cwd": "${workspaceFolder}" },
+      "problemMatcher": [],
+      "icon": { "id": "package", "color": "terminal.ansiCyan" },
+      "presentation": { "panel": "dedicated", "reveal": "always" }
+    },
+    {
       "label": "Test",
       "detail": "vp test (Vitest)",
       "type": "shell",

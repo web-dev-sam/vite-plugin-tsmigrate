@@ -11,4 +11,12 @@ export default defineConfig({
     outDir: "../dist/client",
     emptyOutDir: true,
   },
+  // Dev-only HMR loop: `vp exec vite tool` serves this app with hot reload,
+  // proxying the data endpoints to a running playground's plugin server
+  // (default port 7357; override with TSMIGRATE_API). Not used by the build.
+  server: {
+    proxy: {
+      "/api": process.env.TSMIGRATE_API ?? "http://localhost:7357",
+    },
+  },
 });
