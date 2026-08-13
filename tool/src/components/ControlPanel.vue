@@ -11,7 +11,7 @@ import type { DepthRow, Mode, Readouts } from "../graph/render.ts";
  */
 defineProps<{
   readouts: Readouts | null;
-  header: { version: number; complete: boolean; appUrl: string | null; demo: boolean };
+  header: { version: number; complete: boolean; appUrl: string | null };
 }>();
 const emit = defineEmits<{ depthClick: [height: number] }>();
 
@@ -49,16 +49,13 @@ function depthTitle(d: DepthRow): string {
 
     <!-- Diagnostics header — analysis version/progress + live app link. -->
     <p class="mb-2 text-[11px] text-muted">
-      <template v-if="header.demo">demo fixture</template>
-      <template v-else>
-        v{{ header.version }} ·
-        <span :class="header.complete ? 'text-green' : 'text-muted'">
-          {{ header.complete ? "complete" : "analyzing…" }}
-        </span>
-        <template v-if="header.appUrl">
-          ·
-          <a :href="header.appUrl" target="_blank" class="text-accent hover:underline">app</a>
-        </template>
+      v{{ header.version }} ·
+      <span :class="header.complete ? 'text-green' : 'text-muted'">
+        {{ header.complete ? "complete" : "analyzing…" }}
+      </span>
+      <template v-if="header.appUrl">
+        ·
+        <a :href="header.appUrl" target="_blank" class="text-accent hover:underline">app</a>
       </template>
     </p>
 

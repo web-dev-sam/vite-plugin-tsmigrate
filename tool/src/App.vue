@@ -4,13 +4,12 @@ import type { ComponentGraph, Diagnostics } from "../../src/shared/types.ts";
 import { fetchDiagnostics, fetchGraph } from "./api/client.ts";
 import ControlPanel from "./components/ControlPanel.vue";
 import GraphChart from "./components/GraphChart.vue";
-import { demoGraph } from "./graph/demo.ts";
 import type { Controls, Readouts } from "./graph/render.ts";
 
 /**
  * Root of the dev tool. Owns the live data lifecycle (progressive polling of
- * `/api/graph` with cheap `?since` probes, or the embedded demo fixture),
- * the persistent view-control state, and the chart + panel layout. The panel
+ * `/api/graph` with cheap `?since` probes), the persistent view-control state,
+ * and the chart + panel layout. The panel
  * two-way-binds every control; the chart renders whichever induced graph
  * (`vue` or `full`) the TS-swap selects and reports its readouts back up.
  */
@@ -18,7 +17,6 @@ const graph = ref<ComponentGraph | null>(null);
 const diag = ref<Diagnostics | null>(null);
 const readouts = ref<Readouts | null>(null);
 const error = ref<string | null>(null);
-const demo = ref(false);
 
 // Persistent view controls (defaults mirror the prototype's initial panel).
 const view = reactive({
@@ -55,7 +53,6 @@ const header = computed(() => ({
   version: graph.value?.version ?? 0,
   complete: graph.value?.complete ?? false,
   appUrl: diag.value?.appUrl ?? null,
-  demo: demo.value,
 }));
 
 const chart = ref<InstanceType<typeof GraphChart> | null>(null);
@@ -64,24 +61,12 @@ let timer: ReturnType<typeof setTimeout> | undefined;
 let stopped = false;
 let appliedTsDefault = false;
 
-const isEmpty = (g: ComponentGraph) => g.vue.nodes.length === 0 && g.full.nodes.length === 0;
-
-function loadDemo() {
-  demo.value = true;
-  graph.value = demoGraph();
-}
-
 // Poll fast while analysis runs, then slowly (cheap ?since probes) once
 // complete so watcher-driven changes still surface.
 async function poll() {
   try {
     const res = await fetchGraph(graph.value?.version);
     if (!("unchanged" in res)) {
-      // A live server with nothing to show → fall back to the demo fixture.
-      if (isEmpty(res)) {
-        loadDemo();
-        return;
-      }
       graph.value = res;
       // A tsx-only project (e.g. a component library like Vuetify) has no
       // `.vue` nodes; once the crawl completes, default the view to the full
@@ -108,11 +93,7 @@ onMounted(async () => {
   try {
     diag.value = await fetchDiagnostics();
   } catch {
-    // Diagnostics are best-effort chrome; ignore when offline (e.g. demo).
-  }
-  if (new URLSearchParams(location.search).has("demo")) {
-    loadDemo();
-    return;
+    // Diagnostics are best-effort chrome; ignore when offline.
   }
   void poll();
 });
