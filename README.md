@@ -74,6 +74,10 @@ running `vp dev` in its directory.
 
 ### `playground/` — vue-vben-admin (a real app, live type-check)
 
+![vue-vben-admin import graph](./docs/graph-vben.webp)
+
+_`web-antd`'s component + module graph — 693 nodes / 1643 edges, all green (fully typed). Node size ∝ LoC; edges are import relations._
+
 `playground/` is a **complex, real-world app**: [vue-vben-admin](https://github.com/vbenjs/vue-vben-admin)'s
 `web-antd` admin — a Vue 3 + TypeScript monorepo (~700 `.vue` + ~700 `.ts`
 across the app shell and its `@vben/*` / `@vben-core/*` packages) — vendored as
@@ -106,6 +110,10 @@ Notes specific to this playground:
 
 ### `playground-vuetify/` — Vuetify (a component library)
 
+![Vuetify module graph](./docs/graph-vuetify.webp)
+
+_`packages/vuetify/src` — 524 TypeScript modules (blue TS rings) / 2371 edges. A fully-migrated component library, all green._
+
 `playground-vuetify/` vendors the **Vuetify monorepo itself**
 ([`vuetifyjs/vuetify`](https://github.com/vuetifyjs/vuetify)) as a git submodule
 under `playground-vuetify/vuetify`. Unlike vben (an app), this is a component
@@ -124,7 +132,7 @@ Notes specific to this playground:
 
 - **It's `.tsx`, not `.vue`**: Vuetify authors components as `.tsx`, so the
   component graph lives in the module (TS) view — the tool auto-selects "include
-  TS files" when a project has no `.vue` nodes. Purple rings mark TS modules.
+  TS files" when a project has no `.vue` nodes. Blue rings mark TS modules.
 - **The type-check is real** — it runs Vuetify's own `vue-tsc` over
   `packages/vuetify` (install the submodule's deps first: `cd
 playground-vuetify/vuetify && pnpm install`). Vuetify's committed ambient
@@ -137,6 +145,10 @@ playground-vuetify/vuetify && pnpm install`). Vuetify's committed ambient
   typed), point the type-check at a codebase that still has untyped modules.
 
 ### `playground-shadcn/` — shadcn-vue (a component registry)
+
+![shadcn-vue registry graph](./docs/graph-shadcn.webp)
+
+_The shadcn-vue registry — ~370 largely-independent components arrayed on the outer (leaf) depth rim of the radial layout._
 
 `playground-shadcn/` vendors the **shadcn-vue monorepo**
 ([`unovue/shadcn-vue`](https://github.com/unovue/shadcn-vue)) as a git submodule
