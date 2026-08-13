@@ -1,5 +1,7 @@
 # vite-plugin-tsmigrate
 
+[![Tests](https://github.com/web-dev-sam/vite-plugin-tsmigrate/actions/workflows/test.yml/badge.svg)](https://github.com/web-dev-sam/vite-plugin-tsmigrate/actions/workflows/test.yml)
+
 A **Vite 8** dev-tool plugin that visualises a Vue app's **TypeScript
 migration progress**. During dev it hosts its **own Vue app** on a separate
 port that crawls your component/module import graph and renders it as an

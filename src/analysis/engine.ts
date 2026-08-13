@@ -104,7 +104,12 @@ export class AnalysisEngine {
 
   async getGraph(): Promise<ComponentGraph> {
     await this.refreshHead();
-    if (this.graphDirty) {
+    // Clear the flag BEFORE awaiting the crawl: a watcher invalidation that
+    // arrives mid-crawl re-arms `graphDirty` and the loop re-crawls, so the
+    // returned snapshot never lags a version bump (which would make the
+    // client's `?since=` probe report "unchanged" against stale data).
+    while (this.graphDirty) {
+      this.graphDirty = false;
       const entry = await findEntry(this.host);
       const crawl = entry
         ? await crawlGraph(this.host, entry)
@@ -113,7 +118,6 @@ export class AnalysisEngine {
       this.collapsedEdges = crawl.edges;
       this.files = crawl.files;
       this.rawEdges = crawl.rawEdges;
-      this.graphDirty = false;
       this._version++;
     }
 

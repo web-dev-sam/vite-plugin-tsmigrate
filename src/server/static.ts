@@ -52,7 +52,15 @@ export function createClientHandler(
   const root = resolve(dir);
   const index = join(root, "index.html");
   return (req, res, notFound) => {
-    const pathname = decodeURIComponent(new URL(req.url ?? "/", "http://localhost").pathname);
+    let pathname: string;
+    try {
+      pathname = decodeURIComponent(new URL(req.url ?? "/", "http://localhost").pathname);
+    } catch {
+      // Malformed percent-encoding (e.g. `/%ZZ`) — do not let the URIError
+      // escape into the request handler as an unhandled rejection / hung socket.
+      notFound();
+      return;
+    }
     const candidate = normalize(join(root, pathname));
     const inside = candidate === root || candidate.startsWith(root + sep);
     const file =

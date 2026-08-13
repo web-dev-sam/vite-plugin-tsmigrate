@@ -1,4 +1,4 @@
-import { extname, join } from "node:path";
+import { extname, join, sep } from "node:path";
 import type { ComponentEdge } from "../shared/types.ts";
 import type { AnalysisHost } from "./host.ts";
 import { extractSfcScripts, parseImports } from "./imports.ts";
@@ -40,9 +40,20 @@ export interface CrawlResult {
 export async function findEntry(host: AnalysisHost): Promise<string | null> {
   const indexHtml = join(host.root, "index.html");
   const html = await host.readFile(indexHtml);
-  const src = html?.match(
-    /<script[^>]*type\s*=\s*["']module["'][^>]*src\s*=\s*["']([^"']+)["']/i,
-  )?.[1];
+  // First `<script type="module">` that has a `src`, regardless of attribute
+  // order (HTML attribute order is arbitrary — do not assume type precedes src).
+  let src: string | undefined;
+  for (const tag of html?.matchAll(/<script\b[^>]*>/gi) ?? []) {
+    const attrs = tag[0];
+    if (!/\btype\s*=\s*["']module["']/i.test(attrs)) {
+      continue;
+    }
+    const match = attrs.match(/\bsrc\s*=\s*["']([^"']+)["']/i);
+    if (match) {
+      src = match[1];
+      break;
+    }
+  }
   const candidates = src ? [src] : ["./src/main.ts", "./src/main.js"];
   for (const candidate of candidates) {
     const resolved = await host.resolve(candidate, indexHtml);
@@ -77,7 +88,7 @@ export async function crawlGraph(host: AnalysisHost, entry: string): Promise<Cra
       const clean = target.split("?")[0];
       if (
         clean.startsWith("\0") ||
-        !clean.startsWith(host.root) ||
+        (clean !== host.root && !clean.startsWith(host.root + sep)) ||
         clean.includes("/node_modules/")
       ) {
         continue;
