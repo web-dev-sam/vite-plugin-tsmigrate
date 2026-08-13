@@ -13,8 +13,8 @@ Scaffolded and maintained with [Vite+](https://viteplus.dev) (`vp`).
 ## Install
 
 ```bash
-vp add -D vite-plugin-tsmigrate
-# or: npm i -D vite-plugin-tsmigrate
+pnpm add -D vite-plugin-tsmigrate
+# npm i -D vite-plugin-tsmigrate  ·  yarn add -D vite-plugin-tsmigrate
 ```
 
 Requires `vite@^8` as a peer dependency.
@@ -29,34 +29,42 @@ import { defineConfig } from "vite";
 import { tsmigrate } from "vite-plugin-tsmigrate";
 
 export default defineConfig({
-  plugins: [tsmigrate({ greeting: "Hello from my app!" })],
+  plugins: [tsmigrate()],
 });
 ```
 
-Then import the virtual module anywhere in your app:
+Start your dev server as usual (`pnpm dev`) and open the **tsmigrate** URL the
+plugin prints next to Vite's:
 
-```ts
-import { greeting } from "virtual:tsmigrate";
-
-console.log(greeting); // -> "Hello from my app!"
+```
+  ➜  Local:      http://localhost:5173/
+  ➜  tsmigrate:  http://localhost:7357/
 ```
 
-For TypeScript, register the virtual module's types (e.g. in `env.d.ts`):
+That page renders your app's component/module import graph as an interactive
+radial map, each file coloured by its `vue-tsc` type status — so you can watch a
+JavaScript → TypeScript migration turn from red to green, spot the files still
+blocking it, and see how much code (and whose) each one carries.
+
+By default the plugin runs `vue-tsc` for you. Point `typeCheckCommand` at your
+project's own checker (or set it to `false` to skip the type pass), and turn on
+`blame` to attribute lines per author:
 
 ```ts
-declare module "virtual:tsmigrate" {
-  export const greeting: string;
-}
+tsmigrate({
+  typeCheckCommand: ["vue-tsc", "--noEmit", "--pretty", "false"],
+  blame: true,
+});
 ```
 
 ## Options
 
-| Option       | Type      | Default            | Description                                                                                                          |
-| ------------ | --------- | ------------------ | -------------------------------------------------------------------------------------------------------------------- |
-| `greeting`   | `string`  | `"Hello, Vite 8!"` | Message exposed by `virtual:tsmigrate`, shown on the tool page, logged on start.                                     |
-| `logOnStart` | `boolean` | `true`             | Log the greeting on config resolve and the tool URL on dev startup.                                                  |
-| `toolPort`   | `number`  | `7357`             | Port of the plugin's own tool server (dev only); ephemeral fallback when taken.                                      |
-| `blame`      | `boolean` | `false`            | Enable per-file `git blame` (LoC per author) analysis, shown in the tool. Off by default; needs real commit history. |
+| Option             | Type                | Default                                        | Description                                                                                                                                                                                            |
+| ------------------ | ------------------- | ---------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `typeCheckCommand` | `string[] \| false` | `["vue-tsc", "--noEmit", "--pretty", "false"]` | Command run once for the project-wide type-check whose per-file error counts colour the graph. Must emit `tsc`-style `--pretty false` diagnostics. `false` skips the pass (every file shows as typed). |
+| `blame`            | `boolean`           | `false`                                        | Enable per-file `git blame` (LoC per author) in the tool. Needs real commit history — a shallow clone has none.                                                                                        |
+| `toolPort`         | `number`            | `7357`                                         | Port for the plugin's own tool server (dev only); falls back to an ephemeral port when taken.                                                                                                          |
+| `logOnStart`       | `boolean`           | `true`                                         | Log the tool URL when the dev server starts.                                                                                                                                                           |
 
 ## Development
 
