@@ -3,3 +3,6 @@ dist
 *.log
 *.tgz
 .DS_Store
+
+# Local-only mid-migration test fixture (see playground-migrating/generate.mjs)
+playground-migrating
