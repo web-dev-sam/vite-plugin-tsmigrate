@@ -1,9 +1,12 @@
 # vite-plugin-tsmigrate
 
-A minimal, well-structured **Vite 8** plugin — the "hello world" of
-devtool-style Vite plugins (vite-plugin-inspect, vue-devtools, …). It ships a
-configurable virtual module and hosts its **own Vue application** on a
-separate port that diagnoses the user's Vue app through a small API.
+A **Vite 8** dev-tool plugin that visualises a Vue app's **TypeScript
+migration progress**. During dev it hosts its **own Vue app** on a separate
+port that crawls your component/module import graph and renders it as an
+interactive d3 radial graph — every file coloured by its `vue-tsc` type
+status (green = typed, red = has or aggregates errors), sized by lines of
+code, with optional per-author `git blame`. A devtool in the spirit of
+vite-plugin-inspect and vue-devtools.
 
 Scaffolded and maintained with [Vite+](https://viteplus.dev) (`vp`).
 
