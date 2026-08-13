@@ -49,6 +49,17 @@ export interface TsMigrateOptions {
    * @default false
    */
   blame?: boolean;
+
+  /**
+   * Map raw `git blame` author names onto canonical display names, merging
+   * their line counts in the tool's blame rollup (e.g. collapse an old git
+   * handle and a full name that are the same person). Only applies when
+   * `blame` is enabled; unmapped authors pass through untouched.
+   *
+   * @default {}
+   * @example { "web-dev-sam": "Sam", "Samuel Braun": "Sam" }
+   */
+  blameAliases?: Record<string, string>;
 }
 
 /** All defaults applied — internals only ever see this shape. */
@@ -61,6 +72,7 @@ export function resolveOptions(options: TsMigrateOptions): ResolvedOptions {
     toolPort = DEFAULT_TOOL_PORT,
     typeCheckCommand = ["vue-tsc", "--noEmit", "--pretty", "false"],
     blame = false,
+    blameAliases = {},
   } = options;
-  return { greeting, logOnStart, toolPort, typeCheckCommand, blame };
+  return { greeting, logOnStart, toolPort, typeCheckCommand, blame, blameAliases };
 }

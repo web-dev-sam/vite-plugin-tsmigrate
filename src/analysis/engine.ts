@@ -4,7 +4,7 @@ import type {
   ComponentEdge,
   ComponentGraph,
 } from "../shared/types.ts";
-import { blameAnalyzer, locAnalyzer } from "./analyzers/index.ts";
+import { applyBlameAliases, blameAnalyzer, locAnalyzer } from "./analyzers/index.ts";
 import { FactStore } from "./cache.ts";
 import { type CrawlFile, crawlGraph, findEntry } from "./graph.ts";
 import type { AnalysisHost } from "./host.ts";
@@ -28,6 +28,7 @@ export class AnalysisEngine {
   #host: AnalysisHost;
   #typeCheckCommand: string[] | false;
   #blame: boolean;
+  #blameAliases: Record<string, string>;
   #facts = new FactStore();
   #version = 1;
   #graphDirty = true;
@@ -54,17 +55,25 @@ export class AnalysisEngine {
    *   `false` to disable it (every node reported as typed). Default disabled.
    * @param opts.blame enable per-file `git blame` (LoC per author) on the
    *   background queue. Default disabled — no git runs and blame stays empty.
+   * @param opts.blameAliases map raw blame author names to canonical display
+   *   names; line counts merge. Only used when `blame` is enabled.
    */
   constructor(
     host: AnalysisHost,
     {
       typeCheckCommand = false,
       blame = false,
-    }: { typeCheckCommand?: string[] | false; blame?: boolean } = {},
+      blameAliases = {},
+    }: {
+      typeCheckCommand?: string[] | false;
+      blame?: boolean;
+      blameAliases?: Record<string, string>;
+    } = {},
   ) {
     this.#host = host;
     this.#typeCheckCommand = typeCheckCommand;
     this.#blame = blame;
+    this.#blameAliases = blameAliases;
     if (typeCheckCommand === false) {
       this.#typeCheckState = "ready";
       this.#typeCheckDirty = false;
@@ -193,7 +202,10 @@ export class AnalysisEngine {
     if (this.#blame && !blame) {
       this.#enqueue(`${blameAnalyzer.name}:${id}`, async () => {
         try {
-          const data = await blameAnalyzer.analyze({ host: this.#host, file: id });
+          const data = applyBlameAliases(
+            await blameAnalyzer.analyze({ host: this.#host, file: id }),
+            this.#blameAliases,
+          );
           this.#facts.set(id, blameAnalyzer.name, { state: "ready", data });
         } catch (error) {
           this.#facts.set(id, blameAnalyzer.name, {

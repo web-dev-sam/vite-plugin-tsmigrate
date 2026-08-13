@@ -18,6 +18,27 @@ export function parseBlamePorcelain(porcelain: string): BlameSummary {
   return { authorLines };
 }
 
+/**
+ * Collapse raw `git blame` author names onto canonical display names via a
+ * user-supplied map, merging line counts (e.g. an old handle and a full name
+ * that are the same person). Unmapped authors pass through; an empty map is a
+ * no-op that returns the input unchanged.
+ */
+export function applyBlameAliases(
+  summary: BlameSummary,
+  aliases: Record<string, string>,
+): BlameSummary {
+  if (Object.keys(aliases).length === 0) {
+    return summary;
+  }
+  const authorLines: Record<string, number> = {};
+  for (const [author, lines] of Object.entries(summary.authorLines)) {
+    const name = aliases[author] ?? author;
+    authorLines[name] = (authorLines[name] ?? 0) + lines;
+  }
+  return { authorLines };
+}
+
 /** Spawn-bound — always scheduled on the bounded background queue. */
 export const blameAnalyzer: Analyzer<BlameSummary> = {
   name: "blame",

@@ -1,6 +1,6 @@
 import { dirname, join } from "node:path";
 import { expect, test } from "vite-plus/test";
-import { parseBlamePorcelain } from "../src/analysis/analyzers/blame.ts";
+import { applyBlameAliases, parseBlamePorcelain } from "../src/analysis/analyzers/blame.ts";
 import { locAnalyzer } from "../src/analysis/analyzers/loc.ts";
 import { AnalysisEngine } from "../src/analysis/engine.ts";
 import { crawlGraph, findEntry } from "../src/analysis/graph.ts";
@@ -368,4 +368,29 @@ test("blame is off by default — status ready, empty blame, no git", async () =
   }
   // Blame off ⇒ neither `git blame` nor the HEAD probe runs.
   expect(gitCalls).toBe(0);
+});
+
+test("applyBlameAliases merges mapped authors and is a no-op when empty", () => {
+  expect(
+    applyBlameAliases(
+      { authorLines: { "web-dev-sam": 4, "Samuel Braun": 2, Bob: 1 } },
+      { "web-dev-sam": "Sam", "Samuel Braun": "Sam" },
+    ).authorLines,
+  ).toEqual({ Sam: 6, Bob: 1 });
+
+  const summary = { authorLines: { Alice: 2 } };
+  expect(applyBlameAliases(summary, {})).toBe(summary);
+});
+
+test("engine applies blameAliases to the rollup", async () => {
+  // fakeHost blame yields { Alice: 2, Bob: 1 } for App.vue; alias Bob -> Alice.
+  const engine = new AnalysisEngine(fakeHost(), {
+    blame: true,
+    blameAliases: { Bob: "Alice" },
+  });
+  await expect.poll(async () => (await engine.getGraph()).complete, { timeout: 2000 }).toBe(true);
+
+  const graph = await engine.getGraph();
+  const app = graph.vue.nodes.find((node) => node.file === "src/App.vue")!;
+  expect(app.blame?.authorLines).toEqual({ Alice: 3 });
 });

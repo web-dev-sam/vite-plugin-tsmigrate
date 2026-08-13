@@ -26,6 +26,7 @@ export async function startToolServer(
   const engine = new AnalysisEngine(createAnalysisHost(server), {
     typeCheckCommand: options.typeCheckCommand,
     blame: options.blame,
+    blameAliases: options.blameAliases,
   });
   wireInvalidation(server, engine);
   const handleApi = createApiHandler(server, engine, options);

@@ -21,5 +21,5 @@ export interface Analyzer<T> {
   analyze(ctx: AnalyzerContext): Promise<T>;
 }
 
-export { blameAnalyzer, parseBlamePorcelain } from "./blame.ts";
+export { applyBlameAliases, blameAnalyzer, parseBlamePorcelain } from "./blame.ts";
 export { locAnalyzer } from "./loc.ts";
