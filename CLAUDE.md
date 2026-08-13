@@ -66,16 +66,40 @@ A minimal, well-structured **Vite 8** plugin (hello world), developed with the
 - **Plugin naming:** the `name` field MUST stay `vite-plugin-tsmigrate`.
 - **Relative imports use explicit `.ts` extensions** (nodenext resolution).
 - **Tests:** `tests/analysis.test.ts` exercises the pure core with in-memory
-  fixtures (no dev server — the point of the DI boundary);
-  `tests/index.test.ts` boots real Vite servers, including a full graph e2e
-  against `playground/`. Keep both green.
+  fixtures (no dev server — the point of the DI boundary), including Vue 2
+  options-API SFCs; `tests/index.test.ts` boots real Vite servers, including a
+  full graph e2e against the hermetic app in `tests/fixtures/app/`. Keep both
+  green.
 - **Playground consumes the plugin from source** (`../src/index.ts`) —
   instant dev loop; packaging is validated by `vp pack` + attw.
 - **Tool UI is prebuilt, not dev-served:** the plugin serves `dist/client`
   (fallback page when absent). After editing `tool/`, run `vp run build`.
   The tool bundles its own Vue — independent of the user's app.
-- `playground/` — private Vue 3 counter app; run via `vp dev` (VSCode task
-  `Dev`). `.vscode/` is git-tracked (settings, extensions, tasks).
+- **The analyzer is Vue-version-agnostic** (Vue 2 and Vue 3): the crawl reads
+  SFC `<script>` blocks and import specifiers statically and never compiles
+  components. Author against `vite`; nothing assumes a Vue major.
+- `playground/` — a complex real-world app: **vue-vben-admin**'s `web-antd`
+  (Vue 3 + TypeScript, ~700 `.vue` + ~700 `.ts`) as a git submodule under
+  `playground/vben`, wired so the crawl fans out across the real module graph
+  (aliases map `#/*` and `@vben/*` to package source). Type-check runs vben's
+  own `vue-tsc` over the app (clean → all green; needs the submodule's
+  `node_modules`); blame is empty (shallow history). Run via `vp dev`.
+  `.vscode/` is git-tracked (settings, extensions, tasks).
+- `playground-vuetify/` — the **Vuetify monorepo itself** (`vuetifyjs/vuetify`)
+  as a submodule under `playground-vuetify/vuetify`: a component _library_
+  (~520 `.tsx`/`.ts` modules from `packages/vuetify/src`, aliased `@/` → src).
+  Runs a **real** `vue-tsc` over `packages/vuetify` (needs the submodule's
+  `node_modules`); Vuetify is fully migrated so a clean checkout is all green,
+  but a real type error reddens its node and every importer. Vuetify has no
+  `.vue` files, so the tool auto-selects the TS/module view (App.vue defaults
+  `includeTs` on when a graph has no `.vue` nodes).
+- `playground-shadcn/` — the **shadcn-vue monorepo** (`unovue/shadcn-vue`) as a
+  submodule under `playground-shadcn/shadcn-vue`: a component _registry_ (Nuxt
+  app). The entry imports all 66 `apps/v4/registry/new-york-v4/ui/*` barrels,
+  aliased `@/`/`~/` → `apps/v4`, so the crawl fans out across ~370 `.vue`
+  components + ~76 `.ts` (~450 nodes). Type-check is off (`typeCheckCommand:
+false`) — the registry is a Nuxt app whose `vue-tsc` needs Nuxt's generated
+  tsconfig/auto-imports; the crawl still maps the real component graph + LoC.
 
 <!--VITE PLUS START-->
 

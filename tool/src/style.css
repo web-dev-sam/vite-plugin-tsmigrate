@@ -14,7 +14,7 @@
   --color-panel: #161b22;
   --color-green: #3fb950;
   --color-red: #f85149;
-  --color-ts: #d2a8ff;
+  --color-ts: #3178c6;
   --color-accent: #58a6ff;
   --color-ringline: #21262d;
 }
@@ -70,7 +70,7 @@
 }
 
 .node.ts {
-  stroke: #d2a8ff;
+  stroke: var(--color-ts);
   stroke-width: 1.2px;
 }
 

@@ -60,43 +60,120 @@ This project uses the [Vite+](https://viteplus.dev) toolchain — a single `vp`
 CLI wrapping Vite, Rolldown, Vitest, tsdown, Oxlint, and Oxfmt.
 
 ```bash
-vp install    # install dependencies (workspace: plugin + tool + playground)
+vp install    # install dependencies (workspace: plugin + tool + playgrounds)
 vp test       # run the test suite (Vitest)
 vp check      # format + lint + type-check
 vp run build  # bundle the plugin (tsdown) + build the tool UI to dist/client
 ```
 
-## Playground
+## Playgrounds
 
-`playground/` hosts a Vue 3 counter app consuming the plugin from source
-(`../src/index.ts`) — edits to the plugin apply instantly, no rebuild loop.
-It runs through the standard Vite CLI, exactly like a real project:
+Three real-world targets exercise the crawl, each vendored as a git submodule
+that consumes the plugin from source (`../src/index.ts`) and is analysed by
+running `vp dev` in its directory.
+
+### `playground/` — vue-vben-admin (a real app, live type-check)
+
+`playground/` is a **complex, real-world app**: [vue-vben-admin](https://github.com/vbenjs/vue-vben-admin)'s
+`web-antd` admin — a Vue 3 + TypeScript monorepo (~700 `.vue` + ~700 `.ts`
+across the app shell and its `@vben/*` / `@vben-core/*` packages) — vendored as
+a git submodule under `playground/vben`. It consumes the plugin from source
+(`../src/index.ts`). The entry (`src/main.ts`) imports web-antd's own entry, and
+`vite.config.ts` maps vben's workspace aliases (`#/*`, `@vben/*`, `@vben-core/*`)
+to package **source**, so the tsmigrate crawl fans out across the real module
+graph without a monorepo build.
 
 ```bash
-cd playground
-vp dev   # dev server — typical colored Vite output
+git submodule update --init --depth 1 playground/vben   # fetch vben
+cd playground/vben && pnpm install                       # deps for the type-check pass
+cd .. && vp dev   # dev server — the tsmigrate tool URL is appended to Vite's output
 ```
 
+Notes specific to this playground:
+
+- **The type-check is real**: `typeCheckCommand` runs vben's own `vue-tsc` over
+  the `web-antd` app, and the per-file error counts drive node coloring. A clean
+  vben checkout is fully typed, so every node reads green (`100% typed`) —
+  introduce a type error in `vben/apps/web-antd/src` to watch a node, and its
+  importers, turn red. The pass needs the submodule's `node_modules` (the
+  `pnpm install` above); without them the tool surfaces a type-check error and
+  nodes fall back to green.
+- **The analyzer is Vue-version-agnostic** — Vue 2 and Vue 3 alike. It reads SFC
+  `<script>` blocks and import specifiers statically and never compiles
+  components, so the Vue version is irrelevant to the crawl.
+- **git blame is unavailable here**: a shallow submodule has no line history to
+  attribute, so the author rollup is empty. Blame is exercised by the tests.
+
+### `playground-vuetify/` — Vuetify (a component library)
+
+`playground-vuetify/` vendors the **Vuetify monorepo itself**
+([`vuetifyjs/vuetify`](https://github.com/vuetifyjs/vuetify)) as a git submodule
+under `playground-vuetify/vuetify`. Unlike vben (an app), this is a component
+_library_: the crawl seeds from Vuetify's own bundler entry and fans out across
+**~520 modules** — every component (`.tsx`), composable, directive and blueprint
+under `packages/vuetify/src`, resolved to source via the `@/` alias (no Vuetify
+build required).
+
+```bash
+git submodule update --init --depth 1 playground-vuetify/vuetify   # fetch Vuetify
+cd playground-vuetify/vuetify && pnpm install                       # deps for the type-check
+cd .. && vp dev   # dev server — the tsmigrate tool URL is appended to Vite's output
+```
+
+Notes specific to this playground:
+
+- **It's `.tsx`, not `.vue`**: Vuetify authors components as `.tsx`, so the
+  component graph lives in the module (TS) view — the tool auto-selects "include
+  TS files" when a project has no `.vue` nodes. Purple rings mark TS modules.
+- **The type-check is real** — it runs Vuetify's own `vue-tsc` over
+  `packages/vuetify` (install the submodule's deps first: `cd
+playground-vuetify/vuetify && pnpm install`). Vuetify's committed ambient
+  `.d.ts` shim sass and build globals like `__VUETIFY_VERSION__`, so the pass is
+  accurate, not spurious. Vuetify is **fully migrated to TypeScript**, so a
+  clean checkout reports zero errors → every node is green. Introduce a type
+  error in a `packages/vuetify/src` module to watch it — and every module that
+  imports it — turn red (a bad type in a foundational composable reddens 100+
+  nodes). To visualise an _in-progress_ migration (red turning green as code is
+  typed), point the type-check at a codebase that still has untyped modules.
+
+### `playground-shadcn/` — shadcn-vue (a component registry)
+
+`playground-shadcn/` vendors the **shadcn-vue monorepo**
+([`unovue/shadcn-vue`](https://github.com/unovue/shadcn-vue)) as a git submodule
+under `playground-shadcn/shadcn-vue`. The analysed codebase is its component
+registry (`apps/v4/registry/new-york-v4`): the entry imports all **66 UI
+component barrels**, so the crawl fans out across **~370 `.vue` components** plus
+their shared `.ts` helpers (~450 nodes / ~880 edges), resolved to source via
+shadcn-vue's `@/` alias (no build required).
+
+```bash
+git submodule update --init --depth 1 playground-shadcn/shadcn-vue   # fetch shadcn-vue
+cd playground-shadcn && vp dev   # dev server — the tsmigrate tool URL is appended to Vite's output
+```
+
+Note: shadcn-vue's registry is a Nuxt app whose type-check relies on Nuxt's
+generated tsconfig and auto-imports, so a standalone `vue-tsc` isn't wired here;
+the type pass is left off and the crawl maps the real component graph + LoC.
+The vben and Vuetify playgrounds run a live `vue-tsc` pass.
+
 During dev the plugin hosts **its own Vue app** — the tool UI in `tool/`,
-prebuilt into `dist/client` and shipped with the package — on a separate
-port, unrelated to the app server. The tool analyses the user's app and
-shows every component with its file path, LoC, and git blame
-(lines per author), plus the import relations between components (the data
-behind a future d3 graph view). Data flows over a small JSON API:
-`GET /api/graph` (progressive results while analyzers run; cheap
-`?since=<version>` probes once complete) and `GET /api/diagnostics`.
-Its URL is appended to Vite's block, styled exactly like Vite's
-output (green `➜`, cyan URL, via picocolors — Vite's own color lib):
+prebuilt into `dist/client` and shipped with the package — on a separate port,
+unrelated to the app server. The tool analyses the user's app and shows every
+component with its file path, LoC, and git blame (lines per author), plus the
+component import graph rendered as a d3 radial view. Data flows over a small
+JSON API: `GET /api/graph` (progressive results while analyzers run; cheap
+`?since=<version>` probes once complete) and `GET /api/diagnostics`. Its URL is
+appended to Vite's block, styled exactly like Vite's output (green `➜`, cyan
+URL, via picocolors — Vite's own color lib):
 
 ```
   ➜  Local:   http://localhost:5173/
   ➜  tsmigrate: http://localhost:7357/
 ```
 
-Two Vue apps run side by side: yours on 5173, the plugin's tool on 7357.
-The tool shuts down with the dev server. After editing `tool/`, rebuild it
-with `vp run build` (the plugin serves the prebuilt `dist/client`). VSCode
-users: run the `Dev` task from the tracked `.vscode/tasks.json`.
+The tool shuts down with the dev server. After editing `tool/`, rebuild it with
+`vp run build` (the plugin serves the prebuilt `dist/client`). VSCode users: run
+the `Dev` task from the tracked `.vscode/tasks.json`.
 
 ## License
 

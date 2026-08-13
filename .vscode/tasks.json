@@ -13,6 +13,28 @@
       "presentation": { "panel": "dedicated", "reveal": "always" }
     },
     {
+      "label": "Dev (Vuetify)",
+      "detail": "Vuetify playground dev server (vite dev) — open the tsmigrate URL it prints",
+      "type": "shell",
+      "command": "vp dev",
+      "options": { "cwd": "${workspaceFolder}/playground-vuetify" },
+      "isBackground": true,
+      "problemMatcher": [],
+      "icon": { "id": "play", "color": "terminal.ansiGreen" },
+      "presentation": { "panel": "dedicated", "reveal": "always" }
+    },
+    {
+      "label": "Dev (shadcn-vue)",
+      "detail": "shadcn-vue playground dev server (vite dev) — open the tsmigrate URL it prints",
+      "type": "shell",
+      "command": "vp dev",
+      "options": { "cwd": "${workspaceFolder}/playground-shadcn" },
+      "isBackground": true,
+      "problemMatcher": [],
+      "icon": { "id": "play", "color": "terminal.ansiGreen" },
+      "presentation": { "panel": "dedicated", "reveal": "always" }
+    },
+    {
       "label": "Test",
       "detail": "vp test (Vitest)",
       "type": "shell",

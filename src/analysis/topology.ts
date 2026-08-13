@@ -57,17 +57,35 @@ export function computeHeights(
 }
 
 /**
- * Top-level folder used for angular clustering. Relative to `root`, dropping a
- * conventional `src/` source dir, the first path segment is the group; files
- * that sit directly in the source dir fall back to `(root)`.
+ * Group used for angular clustering, checked in order:
+ *  1. Monorepo: a `<workspace-package>/src/…` path groups by the package dir
+ *     (e.g. vben's `packages/effects/access/src/…` → `access`).
+ *  2. Plain / framework layouts: drop a conventional frontend source root
+ *     (`src/`, GitLab's `app/assets/javascripts/`, …) and take the first
+ *     feature segment; files sitting directly in the source root → `(root)`.
  */
+const SOURCE_ROOTS = ["app/assets/javascripts/", "resources/js/", "assets/javascripts/"];
+
 export function groupOf(id: string, root: string): string {
-  const rest = relative(root, id)
-    .split(sep)
-    .join("/")
-    .replace(/^src\//, "");
-  const slash = rest.indexOf("/");
-  return slash === -1 ? "(root)" : rest.slice(0, slash);
+  const rest = relative(root, id).split(sep).join("/");
+  // Monorepo package: the dir immediately before a nested `/src/`.
+  const srcAt = rest.indexOf("/src/");
+  if (srcAt > 0) {
+    const pkg = rest.slice(0, srcAt);
+    return pkg.slice(pkg.lastIndexOf("/") + 1);
+  }
+  // Plain / framework layouts: strip a conventional source root, first segment.
+  let feature = rest;
+  for (const marker of SOURCE_ROOTS) {
+    const at = feature.indexOf(marker);
+    if (at !== -1) {
+      feature = feature.slice(at + marker.length);
+      break;
+    }
+  }
+  feature = feature.replace(/^src\//, "");
+  const slash = feature.indexOf("/");
+  return slash === -1 ? "(root)" : feature.slice(0, slash);
 }
 
 /**

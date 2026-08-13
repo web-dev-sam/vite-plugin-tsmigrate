@@ -27,6 +27,7 @@ const view = reactive({
   showRings: true,
   showBlame: false,
   includeTs: false,
+  showLinks: false,
   search: "",
   blameGreen: true,
   blameRed: false,
@@ -41,6 +42,7 @@ const controls = computed<Controls>(() => ({
   search: view.search,
   blameGreen: view.blameGreen,
   blameRed: view.blameRed,
+  showLinks: view.showLinks,
 }));
 
 // `include TS files` swaps the component-only graph for the full module graph.
@@ -60,6 +62,7 @@ const chart = ref<InstanceType<typeof GraphChart> | null>(null);
 
 let timer: ReturnType<typeof setTimeout> | undefined;
 let stopped = false;
+let appliedTsDefault = false;
 
 const isEmpty = (g: ComponentGraph) => g.vue.nodes.length === 0 && g.full.nodes.length === 0;
 
@@ -80,6 +83,18 @@ async function poll() {
         return;
       }
       graph.value = res;
+      // A tsx-only project (e.g. a component library like Vuetify) has no
+      // `.vue` nodes; once the crawl completes, default the view to the full
+      // module graph so it isn't blank. Fires once — a manual toggle sticks.
+      if (
+        !appliedTsDefault &&
+        res.complete &&
+        res.vue.nodes.length === 0 &&
+        res.full.nodes.length > 0
+      ) {
+        view.includeTs = true;
+        appliedTsDefault = true;
+      }
     }
     error.value = null;
   } catch (err) {
@@ -123,6 +138,7 @@ onUnmounted(() => {
     v-model:show-rings="view.showRings"
     v-model:show-blame="view.showBlame"
     v-model:include-ts="view.includeTs"
+    v-model:show-links="view.showLinks"
     v-model:search="view.search"
     v-model:blame-green="view.blameGreen"
     v-model:blame-red="view.blameRed"

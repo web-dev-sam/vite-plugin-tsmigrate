@@ -1,3 +1,5 @@
 packages:
   - playground
+  - playground-vuetify
+  - playground-shadcn
   - tool

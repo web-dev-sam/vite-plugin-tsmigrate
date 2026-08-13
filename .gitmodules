@@ -1,0 +1,17 @@
+[submodule "playground/vben"]
+	path = playground/vben
+	url = https://github.com/vbenjs/vue-vben-admin.git
+	branch = main
+	shallow = true
+
+[submodule "playground-vuetify/vuetify"]
+	path = playground-vuetify/vuetify
+	url = https://github.com/vuetifyjs/vuetify.git
+	branch = master
+	shallow = true
+
+[submodule "playground-shadcn/shadcn-vue"]
+	path = playground-shadcn/shadcn-vue
+	url = https://github.com/unovue/shadcn-vue.git
+	branch = dev
+	shallow = true

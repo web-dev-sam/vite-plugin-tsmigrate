@@ -38,6 +38,12 @@ export interface Controls {
   search: string;
   blameGreen: boolean;
   blameRed: boolean;
+  /**
+   * Render every import edge among the shown nodes. Off by default: with
+   * thousands of edges the default view draws links only for the selected
+   * node's subtree. Turning this on opts back into the full edge overlay.
+   */
+  showLinks: boolean;
 }
 
 /** One row of the per-depth progress table (highest depth first). */
@@ -174,6 +180,7 @@ export function initGraph(opts: InitOptions): GraphController {
     search: "",
     blameGreen: true,
     blameRed: false,
+    showLinks: false,
   };
 
   // Current scene, rebuilt whenever the graph (vue vs vue+ts) changes.
@@ -220,6 +227,36 @@ export function initGraph(opts: InitOptions): GraphController {
   }
 
   const linkId = (end: string | RNode): string => (typeof end === "string" ? end : end.id);
+
+  // Which link lines are worth drawing right now (see the body for the rules).
+  function visibleLinks(): RLink[] {
+    if (!current) return [];
+    // Default (no focus, links off): draw nothing. With a focus, restrict to
+    // that node's subtree; with "show links" on, every currently-shown edge.
+    if (!controls.showLinks && focus === null) return [];
+    const inFocus = focus?.set ?? null;
+    return current.links.filter((l) => {
+      const s = l.source as RNode;
+      const t = l.target as RNode;
+      if (isHidden(s) || isHidden(t)) return false;
+      return inFocus === null || (inFocus.has(s.id) && inFocus.has(t.id));
+    });
+  }
+
+  // Bind link <line> elements to the visible subset and position them. Called
+  // whenever focus/filters change — the default (no focus) renders nothing, so
+  // the thousands of edges never hit the DOM until a node is selected.
+  function renderLinks(): void {
+    linkSel = linkG
+      .selectAll<SVGLineElement, RLink>("line")
+      .data(visibleLinks(), (l) => `${linkId(l.source)}\n${linkId(l.target)}`)
+      .join("line")
+      .attr("class", "link")
+      .attr("x1", (d) => (d.source as RNode).x!)
+      .attr("y1", (d) => (d.source as RNode).y!)
+      .attr("x2", (d) => (d.target as RNode).x!)
+      .attr("y2", (d) => (d.target as RNode).y!);
+  }
 
   function tooltipHtml(d: RNode): string {
     const status = d.analyzing
@@ -345,9 +382,7 @@ export function initGraph(opts: InitOptions): GraphController {
     labelG.attr("display", controls.showRings ? null : "none");
     nodeSel.style("display", (d) => (isHidden(d) ? "none" : null));
     labelSel.style("display", (d) => (isHidden(d) ? "none" : null));
-    linkSel.style("display", (l) =>
-      isHidden(l.source as RNode) || isHidden(l.target as RNode) ? "none" : null,
-    );
+    renderLinks();
     applySearch();
   }
 
@@ -414,11 +449,11 @@ export function initGraph(opts: InitOptions): GraphController {
       .attr("class", "ring")
       .attr("r", (h) => radiusOf(h));
 
-    linkSel = linkG
-      .selectAll<SVGLineElement, RLink>("line")
-      .data(links)
-      .join("line")
-      .attr("class", "link");
+    // Links are not rendered by default (performance): with thousands of edges,
+    // keeping every <line> in the DOM is the dominant cost. renderLinks() binds
+    // only the focused node's subtree edges; the simulation below still uses the
+    // full `links` array for layout, so positions are unchanged.
+    linkSel = linkG.selectAll<SVGLineElement, RLink>("line");
 
     const drag = d3
       .drag<SVGCircleElement, RNode>()

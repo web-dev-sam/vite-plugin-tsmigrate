@@ -92,6 +92,58 @@ test("crawls components and collapses barrels into direct edges", async () => {
   expect(edges).toHaveLength(2);
 });
 
+// Vue 2 support: options-API SFCs use a plain `<script>` (no `setup`) and a
+// `.js` entry. The regex crawl is version-agnostic — it must still extract
+// imports and build component edges.
+test("crawls Vue 2 options-API SFCs and a .js entry", async () => {
+  const V2: Record<string, string> = {
+    "/v2/index.html": '<script type="module" src="/src/main.js"></script>',
+    "/v2/src/main.js": 'import App from "./App.vue";\n',
+    "/v2/src/App.vue":
+      '<script>\nimport Widget from "./components/Widget.vue";\nexport default { components: { Widget } };\n</script>\n<template><Widget /></template>\n',
+    "/v2/src/components/Widget.vue":
+      '<script>\nexport default { name: "Widget" };\n</script>\n<template><div /></template>\n',
+  };
+  const host: AnalysisHost = {
+    root: "/v2",
+    async resolve(spec, importer) {
+      const base = spec.startsWith(".")
+        ? join(dirname(importer), spec)
+        : spec.startsWith("/")
+          ? join("/v2", spec)
+          : null;
+      if (!base) {
+        return null;
+      }
+      for (const candidate of [base, `${base}.js`, `${base}.vue`, join(base, "index.js")]) {
+        if (candidate in V2) {
+          return candidate;
+        }
+      }
+      return null;
+    },
+    async readFile(path) {
+      return V2[path] ?? null;
+    },
+    async runGit() {
+      return "";
+    },
+    async exec() {
+      return { stdout: "", stderr: "", code: 0 };
+    },
+  };
+
+  const entry = await findEntry(host);
+  expect(entry).toBe("/v2/src/main.js");
+  const { nodes, edges } = await crawlGraph(host, entry!);
+  expect(nodes).toContain("/v2/src/App.vue");
+  expect(nodes).toContain("/v2/src/components/Widget.vue");
+  expect(edges).toContainEqual({
+    from: "/v2/src/App.vue",
+    to: "/v2/src/components/Widget.vue",
+  });
+});
+
 test("counts lines of code", async () => {
   const loc = await locAnalyzer.analyze({
     host: fakeHost(),
@@ -205,6 +257,9 @@ test("topology computes heights, strict-red propagation, and groups", () => {
 
   expect(groupOf("/r/src/components/X.vue", "/r")).toBe("components");
   expect(groupOf("/r/src/a.ts", "/r")).toBe("(root)");
+  // Monorepo: a `<package>/src/…` path clusters by the workspace package dir.
+  expect(groupOf("/r/packages/effects/access/src/index.ts", "/r")).toBe("access");
+  expect(groupOf("/r/apps/web-antd/src/views/x.vue", "/r")).toBe("web-antd");
 
   // strictRed seeds on C's own errors and propagates UP through importers.
   const fact = (typeErrors: number | null): FileFacts => ({

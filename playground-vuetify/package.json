@@ -1,5 +1,5 @@
 {
-  "name": "tsmigrate-playground",
+  "name": "tsmigrate-playground-vuetify",
   "private": true,
   "type": "module",
   "dependencies": {
