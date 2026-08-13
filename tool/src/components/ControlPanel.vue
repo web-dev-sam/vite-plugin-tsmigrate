@@ -1,9 +1,18 @@
 <script setup lang="ts">
 import type { DepthRow, Mode, Readouts } from "../graph/render.ts";
+import Checkbox from "../ui/Checkbox.vue";
+import Dot from "../ui/Dot.vue";
+import Field from "../ui/Field.vue";
+import ProgressBar from "../ui/ProgressBar.vue";
+import Section from "../ui/Section.vue";
+import Select from "../ui/Select.vue";
+import StatRow from "../ui/StatRow.vue";
+import Tooltip from "../ui/Tooltip.vue";
+import TextInput from "../ui/TextInput.vue";
 
 /**
  * The fixed left panel: title + diagnostics header, LoC-weighted progress bar,
- * the typed/errors/files/edges/leaves-roots readouts, search, colour mode,
+ * the typed/errors/files-edges readouts, search, colour mode,
  * the view-filter checkboxes (incl. the TS-swap), the clickable depth table
  * and the blame-by-author rollup. All readouts are computed by the renderer
  * over the shown set and passed in; every control is a two-way model. Titles
@@ -11,7 +20,7 @@ import type { DepthRow, Mode, Readouts } from "../graph/render.ts";
  */
 defineProps<{
   readouts: Readouts | null;
-  header: { version: number; complete: boolean; appUrl: string | null };
+  header: { complete: boolean; appUrl: string | null };
 }>();
 const emit = defineEmits<{ depthClick: [height: number] }>();
 
@@ -24,6 +33,11 @@ const showLinks = defineModel<boolean>("showLinks", { required: true });
 const search = defineModel<string>("search", { required: true });
 const blameGreen = defineModel<boolean>("blameGreen", { required: true });
 const blameRed = defineModel<boolean>("blameRed", { required: true });
+
+const modeOptions: readonly { value: Mode; label: string }[] = [
+  { value: "strict", label: "strict — red if any subtree file is red" },
+  { value: "naive", label: "naive — red only if the file itself is red" },
+];
 
 const fmt = (n: number) => n.toLocaleString();
 
@@ -43,169 +57,142 @@ function depthTitle(d: DepthRow): string {
 
 <template>
   <aside
-    class="fixed bottom-3 left-3 top-3 w-[375px] overflow-y-auto rounded-lg border border-border bg-panel/95 px-3 py-2.5 text-fg shadow-[0_6px_24px_rgba(0,0,0,0.4)]"
+    class="fixed inset-y-4 left-4 w-[380px] overflow-y-auto rounded-xl border border-border/70 bg-panel/85 p-5 text-sm text-fg shadow-2xl shadow-black/40 backdrop-blur-md"
   >
-    <h1 class="mb-1 text-[13px] font-semibold">Vue typing progress</h1>
+    <header class="mb-4">
+      <h1 class="text-base font-semibold tracking-tight">Vue typing progress</h1>
 
-    <!-- Diagnostics header — analysis version/progress + live app link. -->
-    <p class="mb-2 text-[11px] text-muted">
-      v{{ header.version }} ·
-      <span :class="header.complete ? 'text-green' : 'text-muted'">
-        {{ header.complete ? "complete" : "analyzing…" }}
-      </span>
-      <template v-if="header.appUrl">
-        ·
-        <a :href="header.appUrl" target="_blank" class="text-accent hover:underline">app</a>
-      </template>
-    </p>
+      <!-- Diagnostics header — analysis progress + live app link. -->
+      <p class="mt-1 text-xs text-muted">
+        <span :class="header.complete ? 'text-green' : 'text-muted'">
+          {{ header.complete ? "complete" : "analyzing…" }}
+        </span>
+        <template v-if="header.appUrl">
+          ·
+          <a :href="header.appUrl" target="_blank" class="text-accent hover:underline">app</a>
+        </template>
+      </p>
+    </header>
 
-    <!-- LoC-weighted typing progress of the shown set. -->
-    <div
-      class="my-2 mb-2.5 h-2 overflow-hidden rounded bg-red"
-      title="LoC-weighted typing progress of the shown set: green lines-of-code ÷ total lines-of-code"
-    >
-      <span
-        class="block h-full bg-green"
-        :style="{ width: `${(readouts?.locPct ?? 0).toFixed(1)}%` }"
-      />
-    </div>
-
-    <div
-      class="my-0.5 flex justify-between"
-      title="Files counted green (typed) in the shown set — shown as % of total LoC that is green, then the green file count"
-    >
-      <span
-        ><span
-          class="mr-1.5 inline-block h-2.5 w-2.5 rounded-full bg-green align-[-1px]"
-        />typed</span
+    <Section flush>
+      <!-- LoC-weighted typing progress of the shown set. -->
+      <Tooltip
+        content="LoC-weighted typing progress of the shown set: green lines of code ÷ total lines of code."
       >
-      <span class="text-muted"
-        >{{ (readouts?.locPct ?? 0).toFixed(1) }}% LoC · {{ readouts?.greenFiles ?? 0 }} files</span
-      >
-    </div>
-    <div
-      class="my-0.5 flex justify-between"
-      title="Files counted red (has errors) in the shown set — file count, then their total lines of code"
-    >
-      <span
-        ><span
-          class="mr-1.5 inline-block h-2.5 w-2.5 rounded-full bg-red align-[-1px]"
-        />errors</span
-      >
-      <span class="text-muted"
-        >{{ readouts?.redFiles ?? 0 }} files · {{ fmt(readouts?.redLoc ?? 0) }} LoC</span
-      >
-    </div>
-    <div
-      class="my-0.5 flex justify-between text-muted"
-      title="Files shown / import edges among the shown files (parent imports child)"
-    >
-      <span>files / edges</span>
-      <span>{{ readouts?.files ?? 0 }} / {{ readouts?.edges ?? 0 }}</span>
-    </div>
-    <div
-      class="my-0.5 flex justify-between text-muted"
-      title="Leaves = shown files that import no other shown file (outer rim) / roots = shown files imported by no other shown file (core)"
-    >
-      <span>leaves (outer) / roots (core)</span>
-      <span>{{ readouts?.leaves ?? 0 }} / {{ readouts?.roots ?? 0 }}</span>
-    </div>
+        <ProgressBar :value="readouts?.locPct ?? 0" />
+      </Tooltip>
 
-    <input
-      v-model="search"
-      class="mt-2 box-border w-full rounded-md border border-border bg-canvas px-[7px] py-[5px] text-fg"
-      placeholder="search component…"
-      autocomplete="off"
-    />
+      <div class="mt-3 space-y-1.5">
+        <Tooltip
+          content="Files that fully type-check (no type errors) — as % of total LoC that is green, then the green file count."
+        >
+          <StatRow>
+            <template #label><Dot tone="green" />typed</template>
+            {{ (readouts?.locPct ?? 0).toFixed(1) }}% LoC · {{ readouts?.greenFiles ?? 0 }} files
+          </StatRow>
+        </Tooltip>
+        <Tooltip
+          content="A file counts as an error if it has at least one type error — shown as total LoC, then the file count."
+        >
+          <StatRow>
+            <template #label><Dot tone="red" />errors</template>
+            {{ fmt(readouts?.redLoc ?? 0) }} LoC · {{ readouts?.redFiles ?? 0 }} files
+          </StatRow>
+        </Tooltip>
+        <Tooltip content="Files shown / import edges among the shown files (parent imports child).">
+          <StatRow>
+            <template #label><span class="text-muted">files / edges</span></template>
+            {{ readouts?.files ?? 0 }} / {{ readouts?.edges ?? 0 }}
+          </StatRow>
+        </Tooltip>
+      </div>
+    </Section>
 
-    <label class="mt-2 block select-none text-muted">
-      colour mode
-      <select
-        v-model="mode"
-        class="mt-1 w-full rounded-md border border-border bg-canvas px-1.5 py-1 text-fg"
+    <Section>
+      <div class="space-y-3">
+        <TextInput v-model="search" clearable placeholder="search component…" />
+        <Field label="colour mode">
+          <Select v-model="mode" :options="modeOptions" />
+        </Field>
+      </div>
+
+      <div class="mt-3 space-y-2.5">
+        <Checkbox v-model="onlyRed">show only components with errors</Checkbox>
+        <Checkbox v-model="showRings">show depth numbers</Checkbox>
+        <Checkbox v-if="readouts && readouts.blame.available" v-model="showBlame">
+          show git blame (LoC per author)
+        </Checkbox>
+        <Checkbox v-model="includeTs">
+          include TS files <span class="text-ts">(blue ring)</span>
+        </Checkbox>
+        <Tooltip
+          content="Draw every import edge among the shown components. Off by default for performance; edges otherwise appear only for a selected node's subtree."
+        >
+          <Checkbox v-model="showLinks">show import links</Checkbox>
+        </Tooltip>
+      </div>
+    </Section>
+
+    <!-- Per-depth typing; click a row to isolate that ring. -->
+    <Section>
+      <div
+        class="mb-2 flex items-center justify-between px-2 text-xs font-medium tracking-wide text-muted uppercase"
       >
-        <option value="strict">strict — red if any subtree file is red</option>
-        <option value="naive">naive — red only if the file itself is red</option>
-      </select>
-    </label>
-
-    <label class="mt-2 block select-none text-muted">
-      <input v-model="onlyRed" type="checkbox" /> show only components with errors
-    </label>
-    <label class="mt-2 block select-none text-muted">
-      <input v-model="showRings" type="checkbox" /> show depth numbers
-    </label>
-    <label class="mt-2 block select-none text-muted">
-      <input v-model="showBlame" type="checkbox" /> show git blame (LoC per author)
-    </label>
-    <label class="mt-2 block select-none text-muted">
-      <input v-model="includeTs" type="checkbox" /> include TS files
-      <span class="text-ts">(blue ring)</span>
-    </label>
-    <label
-      class="mt-2 block select-none text-muted"
-      title="Draw every import edge among the shown components. Off by default for performance; edges otherwise appear only for a selected node's subtree."
-    >
-      <input v-model="showLinks" type="checkbox" /> show import links
-    </label>
-
-    <!-- Per-depth progress; click a row to isolate that ring. -->
-    <div class="mt-2.5 border-t border-border pt-2">
-      <table class="w-full border-collapse">
+        <span>by depth</span>
+        <span>% typed</span>
+      </div>
+      <table class="w-full border-collapse text-xs">
         <tbody>
-          <tr
+          <Tooltip
             v-for="d in readouts?.depths ?? []"
             :key="d.height"
-            class="cursor-pointer hover:[&>td]:text-fg"
-            :class="{ '[&>td]:bg-[#1f6feb]/20 [&>td]:text-fg!': d.active }"
-            :title="depthTitle(d)"
+            as="tr"
+            :content="depthTitle(d)"
+            class="cursor-pointer transition-colors hover:[&>td]:text-fg"
+            :class="{ '[&>td]:bg-accent/20 [&>td]:text-fg!': d.active }"
             @click="emit('depthClick', d.height)"
           >
-            <td class="py-px">{{ depthLabel(d) }}</td>
-            <td class="py-px text-right tabular-nums" :class="d.done ? 'text-green' : 'text-muted'">
+            <td class="py-1 pl-2 first:rounded-l">{{ depthLabel(d) }}</td>
+            <td
+              class="py-1 pr-2 text-right tabular-nums last:rounded-r"
+              :class="d.done ? 'text-green' : 'text-muted'"
+            >
               {{ d.pct.toFixed(0) }}%
             </td>
-          </tr>
+          </Tooltip>
         </tbody>
       </table>
-    </div>
+    </Section>
 
-    <!-- Blame rollup source toggles. -->
-    <div class="mt-2.5 flex items-center justify-between border-t border-border pt-2 text-muted">
-      <span>blame LoC from</span>
-      <span>
-        <label class="ml-2.5 inline-block select-none text-muted">
-          <input v-model="blameGreen" type="checkbox" /><span
-            class="mr-1 inline-block h-2 w-2 rounded-full bg-green"
-          />green
-        </label>
-        <label class="ml-2.5 inline-block select-none text-muted">
-          <input v-model="blameRed" type="checkbox" /><span
-            class="mr-1 inline-block h-2 w-2 rounded-full bg-red"
-          />red
-        </label>
-      </span>
-    </div>
-
-    <div v-if="readouts" class="mt-1">
-      <div class="mb-1 text-muted">
-        total LoC by author · {{ readouts.blame.set }} · {{ readouts.blame.files }} files ·
+    <!-- Blame LoC per author over the shown set. -->
+    <Section v-if="readouts && readouts.blame.available">
+      <div class="flex items-center justify-between gap-2">
+        <h2 class="text-xs font-medium tracking-wide text-muted uppercase">blame by author</h2>
+        <span class="flex gap-3 text-xs text-muted">
+          <Checkbox v-model="blameGreen">
+            <Dot tone="green" size="sm" class="mr-1.5" />typed
+          </Checkbox>
+          <Checkbox v-model="blameRed"><Dot tone="red" size="sm" class="mr-1.5" />errors</Checkbox>
+        </span>
+      </div>
+      <div class="mt-2 text-xs text-muted">
+        {{ readouts.blame.set }} · {{ readouts.blame.files }} files ·
         {{ fmt(readouts.blame.sumLoc) }} LoC
       </div>
-      <table class="w-full border-collapse">
+      <table class="mt-1 w-full border-collapse text-xs">
         <tbody>
           <tr v-for="row in readouts.blame.rows" :key="row.author">
-            <td class="py-px">{{ row.author }}</td>
-            <td class="py-px text-right tabular-nums text-muted">
+            <td class="py-0.5">{{ row.author }}</td>
+            <td class="py-0.5 text-right tabular-nums text-muted">
               {{ fmt(row.loc) }} · {{ row.pct.toFixed(1) }}%
             </td>
           </tr>
         </tbody>
       </table>
-    </div>
+    </Section>
 
-    <div class="mt-2 flex justify-between text-[11px] text-muted">
-      <span>drag to pan · scroll to zoom · hover a node</span>
-    </div>
+    <footer class="mt-4 border-t border-border/70 pt-4 text-xs text-muted">
+      drag to pan · scroll to zoom · hover a node
+    </footer>
   </aside>
 </template>

@@ -80,6 +80,8 @@ export interface Readouts {
   roots: number;
   depths: DepthRow[];
   blame: {
+    /** Whether any shown file carries blame data at all (independent of the green/red toggles). */
+    available: boolean;
     /** Which source toggle is active: `green`, `red`, `all`, or `none`. */
     set: string;
     files: number;
@@ -110,6 +112,8 @@ export interface GraphController {
 /** Internal simulation node — the wire node adapted to the prototype's model. */
 interface RNode extends d3.SimulationNodeDatum {
   id: string;
+  /** Path relative to the project root (used for display). */
+  file: string;
   name: string;
   group: string;
   kind: "vue" | "ts";
@@ -139,6 +143,7 @@ const esc = (s: unknown): string =>
 function toRNode(n: ComponentNode): RNode {
   return {
     id: n.id,
+    file: n.file,
     name: n.name,
     group: n.group,
     kind: n.kind,
@@ -259,23 +264,28 @@ export function initGraph(opts: InitOptions): GraphController {
   }
 
   function tooltipHtml(d: RNode): string {
+    // Node colour already conveys green; only surface non-green status.
     const status = d.analyzing
-      ? '<span class="tip-mut">analyzing</span>'
+      ? ' <span class="tip-mut">analyzing</span>'
       : isGreen(d)
-        ? '<span class="tip-ok">green</span>'
-        : '<span class="tip-e">red</span>';
+        ? ""
+        : ' <span class="tip-e">red</span>';
+    // Omit the plain "typed" line (redundant with the green colour); keep
+    // pending / error / subtree-red detail.
     const own = d.analyzing
       ? "type-check pending"
       : d.errors
         ? `${d.errors} own errors`
         : d.strictRed
           ? "self typed · subtree red"
-          : "typed";
+          : null;
+    // Actual file ending (e.g. `tsx`) rather than the coarse `vue`/`ts` kind.
+    const ext = d.file.includes(".") ? d.file.split(".").pop()! : d.kind;
     const links = adj.get(d.id)?.size ?? 0;
-    let html =
-      `<b>${esc(d.name)}</b> ${status} <span class="tip-p">${d.kind}</span>` +
-      `<br><span class="tip-p">${esc(own)}</span>` +
-      `<br><span class="tip-p">${esc(d.id)}</span>` +
+    let html = `<b>${esc(d.name)}</b>${status} <span class="tip-p">${esc(ext)}</span>`;
+    if (own) html += `<br><span class="tip-p">${esc(own)}</span>`;
+    html +=
+      `<br><span class="tip-p">${esc(d.file)}</span>` +
       `<br><span class="tip-p">depth ${d.height} · ${d.size} LOC · ${links} links</span>`;
     if (controls.showBlame) {
       const rows = Object.entries(d.blame).sort((a, b) => b[1] - a[1]);
@@ -302,7 +312,9 @@ export function initGraph(opts: InitOptions): GraphController {
     const sumLoc = sorted.reduce((s, [, c]) => s + c, 0);
     const denom = sumLoc || 1;
     const set = blameGreen && blameRed ? "all" : blameGreen ? "green" : blameRed ? "red" : "none";
+    const available = shownNodes.some((n) => Object.keys(n.blame).length > 0);
     return {
+      available,
       set,
       files: sel.length,
       sumLoc,
@@ -565,8 +577,13 @@ export function initGraph(opts: InitOptions): GraphController {
       })
       .on("mouseover", (e: MouseEvent, d) => {
         const nbr = adj.get(d.id)!;
-        nodeSel!.classed("dim", (o) => o !== d && !nbr.has(o.id));
-        labelSel!.classed("dim", (o) => o !== d && !nbr.has(o.id));
+        // While a search is active it owns the node/label dimming — hover must
+        // not reveal filtered-out nodes, so only the link highlight + tooltip
+        // react. Without a search, hover dims everything outside the neighbourhood.
+        if (!controls.search.trim()) {
+          nodeSel!.classed("dim", (o) => o !== d && !nbr.has(o.id));
+          labelSel!.classed("dim", (o) => o !== d && !nbr.has(o.id));
+        }
         linkSel!
           .classed("hl", (l) => l.source === d || l.target === d)
           .classed("dim", (l) => l.source !== d && l.target !== d);
@@ -578,9 +595,9 @@ export function initGraph(opts: InitOptions): GraphController {
         tooltip.style.top = `${e.clientY + 14}px`;
       })
       .on("mouseout", () => {
-        nodeSel!.classed("dim", false);
-        labelSel!.classed("dim", false);
         linkSel!.classed("hl", false).classed("dim", false);
+        // Restore the search baseline (clears dimming when no search is active).
+        applySearch();
         tooltip.style.opacity = "0";
       });
 

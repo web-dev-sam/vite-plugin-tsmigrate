@@ -35,10 +35,8 @@
     height: 100%;
     background: #0d1117;
     color: #c9d1d9;
-    font:
-      13px/1.4 ui-sans-serif,
-      system-ui,
-      sans-serif;
+    font-family: ui-sans-serif, system-ui, sans-serif;
+    line-height: 1.5;
     overflow: hidden;
   }
 

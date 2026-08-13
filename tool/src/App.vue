@@ -50,7 +50,6 @@ const activeGraph = computed(() => {
 });
 
 const header = computed(() => ({
-  version: graph.value?.version ?? 0,
   complete: graph.value?.complete ?? false,
   appUrl: diag.value?.appUrl ?? null,
 }));
