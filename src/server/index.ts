@@ -1,11 +1,10 @@
 import { createServer as createHttpServer, type Server } from "node:http";
-import sirv from "sirv";
 import type { ViteDevServer } from "vite";
 import { AnalysisEngine } from "../analysis/engine.ts";
 import { patchPrintUrls } from "../log.ts";
 import type { ResolvedOptions } from "../options.ts";
 import { createApiHandler } from "./routes.ts";
-import { FALLBACK_HTML, resolveClientDir } from "./static.ts";
+import { createClientHandler, FALLBACK_HTML, resolveClientDir } from "./static.ts";
 import { createAnalysisHost, wireInvalidation } from "./vite-adapter.ts";
 
 /**
@@ -32,7 +31,7 @@ export async function startToolServer(
   const handleApi = createApiHandler(server, engine, options);
 
   const clientDir = resolveClientDir();
-  const serveClient = clientDir ? sirv(clientDir, { dev: true, single: true }) : null;
+  const serveClient = clientDir ? createClientHandler(clientDir) : null;
 
   const tool = createHttpServer((req, res) => {
     void handleApi(req, res).then((handled) => {
