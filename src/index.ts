@@ -13,6 +13,7 @@ export type {
   ComponentGraph,
   ComponentNode,
   Diagnostics,
+  Graph,
   GraphResponse,
 } from "./shared/types.ts";
 

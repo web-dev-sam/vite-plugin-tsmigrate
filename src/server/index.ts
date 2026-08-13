@@ -23,7 +23,7 @@ export async function startToolServer(
     return;
   }
 
-  const engine = new AnalysisEngine(createAnalysisHost(server));
+  const engine = new AnalysisEngine(createAnalysisHost(server), options.typeCheckCommand);
   wireInvalidation(server, engine);
   const handleApi = createApiHandler(server, engine, options);
 

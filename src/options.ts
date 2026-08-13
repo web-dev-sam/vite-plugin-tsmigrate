@@ -28,12 +28,28 @@ export interface TsMigrateOptions {
    * @default 7357
    */
   toolPort?: number;
+
+  /**
+   * Command (argv array) run once for the project-wide TypeScript pass whose
+   * per-file error counts drive node coloring in the tool. It is expected to
+   * emit `tsc`-style `--pretty false` diagnostics; a nonzero exit with
+   * diagnostics is normal. Pass `false` to disable the pass entirely — every
+   * node is then reported as typed and `status.typecheck` stays `"ready"`.
+   *
+   * @default ["vue-tsc", "--noEmit", "--pretty", "false"]
+   */
+  typeCheckCommand?: string[] | false;
 }
 
 /** All defaults applied — internals only ever see this shape. */
 export type ResolvedOptions = Required<TsMigrateOptions>;
 
 export function resolveOptions(options: TsMigrateOptions): ResolvedOptions {
-  const { greeting = "Hello, Vite 8!", logOnStart = true, toolPort = DEFAULT_TOOL_PORT } = options;
-  return { greeting, logOnStart, toolPort };
+  const {
+    greeting = "Hello, Vite 8!",
+    logOnStart = true,
+    toolPort = DEFAULT_TOOL_PORT,
+    typeCheckCommand = ["vue-tsc", "--noEmit", "--pretty", "false"],
+  } = options;
+  return { greeting, logOnStart, toolPort, typeCheckCommand };
 }

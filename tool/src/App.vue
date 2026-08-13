@@ -1,38 +1,103 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from "vue";
-import type { ComponentGraph, ComponentNode, Diagnostics } from "../../src/shared/types.ts";
+import { computed, onMounted, onUnmounted, reactive, ref } from "vue";
+import type { ComponentGraph, Diagnostics } from "../../src/shared/types.ts";
 import { fetchDiagnostics, fetchGraph } from "./api/client.ts";
+import ControlPanel from "./components/ControlPanel.vue";
+import GraphChart from "./components/GraphChart.vue";
+import { demoGraph } from "./graph/demo.ts";
+import type { Controls, Readouts } from "./graph/render.ts";
 
-const diag = ref<Diagnostics | null>(null);
+/**
+ * Root of the dev tool. Owns the live data lifecycle (progressive polling of
+ * `/api/graph` with cheap `?since` probes, or the embedded demo fixture),
+ * the persistent view-control state, and the chart + panel layout. The panel
+ * two-way-binds every control; the chart renders whichever induced graph
+ * (`vue` or `full`) the TS-swap selects and reports its readouts back up.
+ */
 const graph = ref<ComponentGraph | null>(null);
+const diag = ref<Diagnostics | null>(null);
+const readouts = ref<Readouts | null>(null);
 const error = ref<string | null>(null);
+const demo = ref(false);
+
+// Persistent view controls (defaults mirror the prototype's initial panel).
+const view = reactive({
+  mode: "strict" as Controls["mode"],
+  onlyRed: false,
+  showRings: true,
+  showBlame: false,
+  includeTs: false,
+  search: "",
+  blameGreen: true,
+  blameRed: false,
+});
+
+// The subset the renderer consumes (TS-swap is resolved into `activeGraph`).
+const controls = computed<Controls>(() => ({
+  mode: view.mode,
+  onlyRed: view.onlyRed,
+  showRings: view.showRings,
+  showBlame: view.showBlame,
+  search: view.search,
+  blameGreen: view.blameGreen,
+  blameRed: view.blameRed,
+}));
+
+// `include TS files` swaps the component-only graph for the full module graph.
+const activeGraph = computed(() => {
+  if (!graph.value) return null;
+  return view.includeTs ? graph.value.full : graph.value.vue;
+});
+
+const header = computed(() => ({
+  version: graph.value?.version ?? 0,
+  complete: graph.value?.complete ?? false,
+  appUrl: diag.value?.appUrl ?? null,
+  demo: demo.value,
+}));
+
+const chart = ref<InstanceType<typeof GraphChart> | null>(null);
 
 let timer: ReturnType<typeof setTimeout> | undefined;
 let stopped = false;
 
-// Poll fast while analysis is running, slowly (cheap ?since probes) once
-// complete so watcher-driven changes still show up.
+const isEmpty = (g: ComponentGraph) => g.vue.nodes.length === 0 && g.full.nodes.length === 0;
+
+function loadDemo() {
+  demo.value = true;
+  graph.value = demoGraph();
+}
+
+// Poll fast while analysis runs, then slowly (cheap ?since probes) once
+// complete so watcher-driven changes still surface.
 async function poll() {
   try {
     const res = await fetchGraph(graph.value?.version);
     if (!("unchanged" in res)) {
+      // A live server with nothing to show → fall back to the demo fixture.
+      if (isEmpty(res)) {
+        loadDemo();
+        return;
+      }
       graph.value = res;
     }
     error.value = null;
   } catch (err) {
     error.value = String(err);
   }
-  if (stopped) {
-    return;
-  }
+  if (stopped) return;
   timer = setTimeout(poll, graph.value?.complete ? 2000 : 300);
 }
 
 onMounted(async () => {
   try {
     diag.value = await fetchDiagnostics();
-  } catch (err) {
-    error.value = String(err);
+  } catch {
+    // Diagnostics are best-effort chrome; ignore when offline (e.g. demo).
+  }
+  if (new URLSearchParams(location.search).has("demo")) {
+    loadDemo();
+    return;
   }
   void poll();
 });
@@ -41,120 +106,35 @@ onUnmounted(() => {
   stopped = true;
   clearTimeout(timer);
 });
-
-const nameById = computed(() => {
-  const names = new Map<string, string>();
-  for (const node of graph.value?.nodes ?? []) {
-    names.set(node.id, node.name);
-  }
-  return names;
-});
-
-function blameLabel(node: ComponentNode): string {
-  if (!node.blame) {
-    return node.errors.blame ?? node.status.blame;
-  }
-  return Object.entries(node.blame.authorLines)
-    .map(([author, lines]) => `${author}: ${lines}`)
-    .join(", ");
-}
 </script>
 
 <template>
-  <main>
-    <h1>tsmigrate</h1>
-    <p class="sub">
-      Diagnosing your Vue app
-      <template v-if="diag">
-        — <a v-if="diag.appUrl" :href="diag.appUrl" target="_blank">app</a>
-        <span v-if="diag.vueVersion"> · vue {{ diag.vueVersion }}</span>
-      </template>
-    </p>
+  <GraphChart
+    v-if="activeGraph"
+    ref="chart"
+    :graph="activeGraph"
+    :controls="controls"
+    @readouts="readouts = $event"
+  />
 
-    <p v-if="error" class="error">{{ error }}</p>
+  <ControlPanel
+    v-model:mode="view.mode"
+    v-model:only-red="view.onlyRed"
+    v-model:show-rings="view.showRings"
+    v-model:show-blame="view.showBlame"
+    v-model:include-ts="view.includeTs"
+    v-model:search="view.search"
+    v-model:blame-green="view.blameGreen"
+    v-model:blame-red="view.blameRed"
+    :readouts="readouts"
+    :header="header"
+    @depth-click="chart?.toggleDepth($event)"
+  />
 
-    <template v-if="graph">
-      <p class="status">
-        {{ graph.nodes.length }} components · {{ graph.edges.length }} relations ·
-        {{ graph.complete ? "analysis complete" : "analyzing…" }} · v{{ graph.version }}
-      </p>
-
-      <table>
-        <thead>
-          <tr>
-            <th>Component</th>
-            <th>File</th>
-            <th>LoC</th>
-            <th>Blame (lines per author)</th>
-          </tr>
-        </thead>
-        <tbody>
-          <tr v-for="node in graph.nodes" :key="node.id">
-            <td>{{ node.name }}</td>
-            <td>
-              <code>{{ node.file }}</code>
-            </td>
-            <td>{{ node.loc ?? node.status.loc }}</td>
-            <td>{{ blameLabel(node) }}</td>
-          </tr>
-        </tbody>
-      </table>
-
-      <h2>Relations</h2>
-      <ul v-if="graph.edges.length">
-        <li v-for="edge in graph.edges" :key="edge.from + edge.to">
-          {{ nameById.get(edge.from) ?? edge.from }} →
-          {{ nameById.get(edge.to) ?? edge.to }}
-        </li>
-      </ul>
-      <p v-else>no component imports found</p>
-    </template>
-    <p v-else>Loading…</p>
-  </main>
+  <p
+    v-if="error"
+    class="fixed bottom-3 right-3 rounded-md border border-red/50 bg-panel/95 px-3 py-2 text-xs text-red"
+  >
+    {{ error }}
+  </p>
 </template>
-
-<style scoped>
-main {
-  font-family: system-ui, sans-serif;
-  max-width: 48rem;
-  margin: 3rem auto;
-  padding: 0 1rem;
-}
-
-.sub {
-  color: #888;
-  margin-top: -0.75rem;
-}
-
-.error {
-  color: #c00;
-}
-
-.status {
-  color: #666;
-  font-size: 0.9rem;
-}
-
-table {
-  border-collapse: collapse;
-  width: 100%;
-}
-
-th,
-td {
-  text-align: left;
-  padding: 0.35rem 0.75rem 0.35rem 0;
-  border-bottom: 1px solid #ddd;
-  vertical-align: top;
-}
-
-h2 {
-  font-size: 1rem;
-  margin-top: 1.5rem;
-}
-
-ul {
-  margin: 0;
-  padding-left: 1.1rem;
-}
-</style>

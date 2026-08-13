@@ -14,10 +14,23 @@ const SCRIPT_EXTS: Record<string, true> = {
   ".cjs": true,
 };
 
-/** Result of a crawl: every reachable `.vue` file plus component relations. */
+/** A reachable module and its kind, derived from the file extension. */
+export interface CrawlFile {
+  id: string;
+  kind: "vue" | "ts";
+}
+
+/**
+ * Result of a crawl. `nodes`/`edges` are the `.vue` component view with
+ * barrel-collapsed edges (the existing semantics). `files`/`rawEdges` are the
+ * full module view: every reachable file with its kind and the raw
+ * importer→imported edges among them, uncollapsed.
+ */
 export interface CrawlResult {
   nodes: string[];
   edges: ComponentEdge[];
+  files: CrawlFile[];
+  rawEdges: ComponentEdge[];
 }
 
 /**
@@ -135,5 +148,25 @@ export async function crawlGraph(host: AnalysisHost, entry: string): Promise<Cra
     }
   }
 
-  return { nodes: [...vueNodes].sort(), edges };
+  // Full module view: every reachable file with its kind, plus the raw
+  // importer→imported edges among them (no barrel collapsing).
+  const files: CrawlFile[] = [];
+  const rawEdges: ComponentEdge[] = [];
+  const seenRaw = new Set<string>();
+  for (const from of [...directImports.keys()].sort()) {
+    files.push({ id: from, kind: from.endsWith(".vue") ? "vue" : "ts" });
+    for (const to of directImports.get(from) ?? []) {
+      if (to === from) {
+        continue;
+      }
+      const key = `${from}\n${to}`;
+      if (seenRaw.has(key)) {
+        continue;
+      }
+      seenRaw.add(key);
+      rawEdges.push({ from, to });
+    }
+  }
+
+  return { nodes: [...vueNodes].sort(), edges, files, rawEdges };
 }

@@ -1,0 +1,122 @@
+@import "tailwindcss";
+
+/*
+ * Design tokens — the prototype's GitHub-dark palette exposed to Tailwind v4
+ * so components compose with `bg-panel`, `text-muted`, `text-green`, … instead
+ * of scattering raw hex. The SVG scene classes below stay in plain CSS because
+ * d3 toggles them imperatively by class name.
+ */
+@theme {
+  --color-canvas: #0d1117;
+  --color-fg: #c9d1d9;
+  --color-muted: #8b949e;
+  --color-border: #30363d;
+  --color-panel: #161b22;
+  --color-green: #3fb950;
+  --color-red: #f85149;
+  --color-ts: #d2a8ff;
+  --color-accent: #58a6ff;
+  --color-ringline: #21262d;
+}
+
+/*
+ * GitHub-dark base for the dev tool (mirrors the d3 prototype's stylesheet).
+ * Tailwind utilities handle the panel/chrome layout; these globals set the
+ * full-viewport dark canvas and the SVG scene classes d3 toggles directly.
+ */
+@layer base {
+  :root {
+    color-scheme: dark;
+  }
+
+  html,
+  body {
+    margin: 0;
+    height: 100%;
+    background: #0d1117;
+    color: #c9d1d9;
+    font:
+      13px/1.4 ui-sans-serif,
+      system-ui,
+      sans-serif;
+    overflow: hidden;
+  }
+
+  #app {
+    height: 100%;
+  }
+}
+
+/* SVG scene classes toggled imperatively by graph/render.ts. */
+.ring {
+  fill: none;
+  stroke: #21262d;
+}
+
+.link {
+  stroke: #30363d;
+  stroke-opacity: 0.5;
+}
+
+.link.hl {
+  stroke: #58a6ff;
+  stroke-opacity: 0.95;
+}
+
+.node {
+  stroke: #0d1117;
+  stroke-width: 0.6px;
+  cursor: pointer;
+}
+
+.node.ts {
+  stroke: #d2a8ff;
+  stroke-width: 1.2px;
+}
+
+.node.dim {
+  opacity: 0.12;
+}
+
+.link.dim {
+  stroke-opacity: 0.04;
+}
+
+.rlabel {
+  fill: #05080d;
+  font-weight: 700;
+  pointer-events: none;
+  user-select: none;
+  font-family: ui-monospace, monospace;
+}
+
+.rlabel.dim {
+  opacity: 0.12;
+}
+
+/* Hover tooltip — owned by GraphChart.vue markup, filled by graph/render.ts. */
+.tip .tip-p {
+  color: #8b949e;
+  word-break: break-all;
+}
+
+.tip .tip-e {
+  color: #f85149;
+}
+
+.tip .tip-ok {
+  color: #3fb950;
+}
+
+.tip .tip-mut {
+  color: #8b949e;
+}
+
+.tip .tip-blame {
+  display: block;
+  margin-top: 5px;
+  padding-top: 4px;
+  border-top: 1px solid #30363d;
+  color: #c9d1d9;
+  font-variant-numeric: tabular-nums;
+}

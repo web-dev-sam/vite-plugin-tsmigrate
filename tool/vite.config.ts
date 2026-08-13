@@ -1,3 +1,4 @@
+import tailwindcss from "@tailwindcss/vite";
 import vue from "@vitejs/plugin-vue";
 import { defineConfig } from "vite";
 
@@ -5,7 +6,7 @@ import { defineConfig } from "vite";
 // npm package, then served by the plugin on its own port during dev.
 export default defineConfig({
   base: "./",
-  plugins: [vue()],
+  plugins: [vue(), tailwindcss()],
   build: {
     outDir: "../dist/client",
     emptyOutDir: true,

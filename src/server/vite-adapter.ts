@@ -35,6 +35,35 @@ export function createAnalysisHost(server: ViteDevServer): AnalysisHost {
       });
       return stdout;
     },
+    exec(command, args) {
+      // Never reject: a nonzero exit is normal for a type checker with
+      // diagnostics, and we want its output regardless. Spawn failures
+      // (ENOENT) resolve with a nonzero code and the reason in stderr.
+      const { promise, resolve } = Promise.withResolvers<{
+        stdout: string;
+        stderr: string;
+        code: number;
+      }>();
+      execFile(
+        command,
+        args,
+        { cwd: root, maxBuffer: 256 * 1024 * 1024 },
+        (error, stdout, stderr) => {
+          if (!error) {
+            resolve({ stdout, stderr, code: 0 });
+            return;
+          }
+          // Nonzero exit → `code` is the numeric status. Spawn failure
+          // → `code` is a string (e.g. "ENOENT"); surface its message.
+          if (typeof error.code === "number") {
+            resolve({ stdout, stderr, code: error.code });
+          } else {
+            resolve({ stdout, stderr: stderr || error.message, code: 1 });
+          }
+        },
+      );
+      return promise;
+    },
   };
 }
 

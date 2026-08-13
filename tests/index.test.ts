@@ -57,7 +57,9 @@ test("analyses the playground app and serves the component graph", async () => {
     root: fileURLToPath(new URL("../playground", import.meta.url)),
     configFile: false,
     customLogger: captureLogger(messages),
-    plugins: [tsmigrate({ toolPort: 0 })],
+    // vue-tsc is not installed in the playground — keep the e2e deterministic
+    // and fast by disabling the project type-check pass.
+    plugins: [tsmigrate({ toolPort: 0, typeCheckCommand: false })],
     server: { port: 0 },
   });
 
@@ -88,14 +90,26 @@ test("analyses the playground app and serves the component graph", async () => {
     .toBe(true);
   const graph = (await (await fetch(graphUrl)).json()) as ComponentGraph;
 
-  const files = graph.nodes.map((node) => node.file);
+  const files = graph.vue.nodes.map((node) => node.file);
   expect(files).toContain("src/App.vue");
   expect(files).toContain("src/components/Counter.vue");
 
-  const app = graph.nodes.find((node) => node.file === "src/App.vue")!;
-  const counter = graph.nodes.find((node) => node.file === "src/components/Counter.vue")!;
+  const app = graph.vue.nodes.find((node) => node.file === "src/App.vue")!;
+  const counter = graph.vue.nodes.find((node) => node.file === "src/components/Counter.vue")!;
   expect(app.loc).toBeGreaterThan(5);
-  expect(graph.edges).toContainEqual({ from: app.id, to: counter.id });
+  expect(app.kind).toBe("vue");
+  // App imports Counter directly — a barrel-collapsed vue edge.
+  expect(graph.vue.edges).toContainEqual({ from: app.id, to: counter.id });
+
+  // Type-check is disabled here: every node reads as typed, nothing red.
+  expect(app.status.typecheck).toBe("ready");
+  expect(app.typeErrors).toBeNull();
+  expect(app.strictRed).toBe(false);
+
+  // The full graph also walks `.ts` modules (e.g. the entry) with raw edges.
+  const fullFiles = graph.full.nodes.map((node) => node.file);
+  expect(fullFiles).toContain("src/main.ts");
+  expect(graph.full.nodes.length).toBeGreaterThanOrEqual(graph.vue.nodes.length);
 
   // App.vue is tracked in git — blame must resolve with real authors.
   expect(app.status.blame).toBe("ready");

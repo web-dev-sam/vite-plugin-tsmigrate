@@ -11,30 +11,56 @@ export interface BlameSummary {
   authorLines: Record<string, number>;
 }
 
+/**
+ * One node in an induced graph. File-level facts (`loc`, `blame`,
+ * `typeErrors`, `status`) are identical wherever the file appears; the
+ * topology fields (`height`, `strictRed`) are relative to the graph the node
+ * belongs to — a `.vue` file's subtree differs between the component-only
+ * `vue` graph and the `full` graph that also walks `.ts` modules.
+ */
 export interface ComponentNode {
   /** Absolute module id — stable key, referenced by edges. */
   id: string;
   /** Path relative to the project root. */
   file: string;
-  /** Component name derived from the file name. */
+  /** Component/module name derived from the file name. */
   name: string;
+  /** Top-level folder used for angular clustering (e.g. `layout`, `(root)`). */
+  group: string;
+  /** Component (`.vue`) vs plain module (`.ts`). */
+  kind: "vue" | "ts";
   /** Total lines in the file (null until analyzed). */
   loc: number | null;
+  /** Longest import path from this node down to a leaf, within its graph. */
+  height: number;
+  /** True when this file OR anything in its import subtree has type errors. */
+  strictRed: boolean;
+  /** Own type-error count (null until the type-check pass completes). */
+  typeErrors: number | null;
   /** Blame breakdown (null until analyzed; see status.blame). */
   blame: BlameSummary | null;
   /** Per-analyzer progress — the UI renders progressively. */
-  status: { loc: AnalyzerState; blame: AnalyzerState };
-  errors: Partial<Record<"loc" | "blame", string>>;
+  status: { loc: AnalyzerState; blame: AnalyzerState; typecheck: AnalyzerState };
+  errors: Partial<Record<"loc" | "blame" | "typecheck", string>>;
 }
 
 /**
- * Importer → imported relation between components. Non-component modules
+ * Importer → imported relation. In the `vue` graph, non-component modules
  * (barrels, composables) are collapsed: `A.vue → utils/index.ts → B.vue`
- * yields the edge `A → B`.
+ * yields the edge `A → B`. In the `full` graph, edges are the raw module
+ * imports with no collapsing.
  */
 export interface ComponentEdge {
   from: string;
   to: string;
+}
+
+/** A self-consistent induced graph: heights/edges/maxHeight all relative to `nodes`. */
+export interface Graph {
+  nodes: ComponentNode[];
+  edges: ComponentEdge[];
+  /** Largest `height` among `nodes` — the number of concentric depth rings. */
+  maxHeight: number;
 }
 
 export interface ComponentGraph {
@@ -43,8 +69,10 @@ export interface ComponentGraph {
   /** True when no analyzer work is queued or running. */
   complete: boolean;
   root: string;
-  nodes: ComponentNode[];
-  edges: ComponentEdge[];
+  /** `.vue` components only, with barrel-collapsed edges. */
+  vue: Graph;
+  /** Reachable `.vue` + `.ts` modules, with raw import edges. */
+  full: Graph;
 }
 
 /** Cheap answer to `GET /api/graph?since=<version>` when nothing changed. */
