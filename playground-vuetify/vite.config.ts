@@ -45,6 +45,7 @@ export default defineConfig({
         "--pretty",
         "false",
       ],
+      blame: false,
     }),
   ],
 });
