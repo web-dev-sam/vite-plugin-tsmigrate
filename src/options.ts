@@ -39,6 +39,16 @@ export interface TsMigrateOptions {
    * @default ["vue-tsc", "--noEmit", "--pretty", "false"]
    */
   typeCheckCommand?: string[] | false;
+
+  /**
+   * Enable per-file `git blame` analysis (lines of code per author), surfaced
+   * in the tool. Runs `git blame` per reachable file on the background queue,
+   * so it costs one git process per file and needs real commit history (a
+   * shallow checkout has none). Off by default.
+   *
+   * @default false
+   */
+  blame?: boolean;
 }
 
 /** All defaults applied — internals only ever see this shape. */
@@ -50,6 +60,7 @@ export function resolveOptions(options: TsMigrateOptions): ResolvedOptions {
     logOnStart = true,
     toolPort = DEFAULT_TOOL_PORT,
     typeCheckCommand = ["vue-tsc", "--noEmit", "--pretty", "false"],
+    blame = false,
   } = options;
-  return { greeting, logOnStart, toolPort, typeCheckCommand };
+  return { greeting, logOnStart, toolPort, typeCheckCommand, blame };
 }

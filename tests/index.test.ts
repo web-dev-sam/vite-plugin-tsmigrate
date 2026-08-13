@@ -61,7 +61,7 @@ test("analyses the playground app and serves the component graph", async () => {
     customLogger: captureLogger(messages),
     // Keep the e2e deterministic and fast by disabling the project type-check
     // pass (the hermetic fixture has no vue-tsc toolchain of its own).
-    plugins: [tsmigrate({ toolPort: 0, typeCheckCommand: false })],
+    plugins: [tsmigrate({ toolPort: 0, typeCheckCommand: false, blame: true })],
     server: { port: 0 },
   });
 

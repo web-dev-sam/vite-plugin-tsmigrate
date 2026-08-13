@@ -27,6 +27,7 @@ const TYPECHECK_KEY = "typecheck";
 export class AnalysisEngine {
   #host: AnalysisHost;
   #typeCheckCommand: string[] | false;
+  #blame: boolean;
   #facts = new FactStore();
   #version = 1;
   #graphDirty = true;
@@ -47,14 +48,23 @@ export class AnalysisEngine {
   #typeCheckDirty = true;
 
   /**
-   * @param typeCheckCommand argv for the project type-check pass, or `false`
-   *   to disable it (every node reported as typed). Defaults to disabled so
-   *   pure-core tests need no runner; the plugin always passes the resolved
-   *   option (default `vue-tsc --noEmit --pretty false`).
+   * @param host analysis capabilities (resolver, reader, git) injected by the
+   *   caller (Vite adapter in the plugin, canned fixtures in tests).
+   * @param opts.typeCheckCommand argv for the project type-check pass, or
+   *   `false` to disable it (every node reported as typed). Default disabled.
+   * @param opts.blame enable per-file `git blame` (LoC per author) on the
+   *   background queue. Default disabled — no git runs and blame stays empty.
    */
-  constructor(host: AnalysisHost, typeCheckCommand: string[] | false = false) {
+  constructor(
+    host: AnalysisHost,
+    {
+      typeCheckCommand = false,
+      blame = false,
+    }: { typeCheckCommand?: string[] | false; blame?: boolean } = {},
+  ) {
     this.#host = host;
     this.#typeCheckCommand = typeCheckCommand;
+    this.#blame = blame;
     if (typeCheckCommand === false) {
       this.#typeCheckState = "ready";
       this.#typeCheckDirty = false;
@@ -122,6 +132,9 @@ export class AnalysisEngine {
 
   /** Blame facts are keyed to the commit, not file content. */
   async #refreshHead(): Promise<void> {
+    if (!this.#blame) {
+      return;
+    }
     let sha: string | null = null;
     try {
       sha = (await this.#host.runGit(["rev-parse", "HEAD"])).trim();
@@ -177,7 +190,7 @@ export class AnalysisEngine {
 
     // Queued analyzer: schedule once, report progressively.
     const blame = this.#facts.get<BlameSummary>(id, blameAnalyzer.name);
-    if (!blame) {
+    if (this.#blame && !blame) {
       this.#enqueue(`${blameAnalyzer.name}:${id}`, async () => {
         try {
           const data = await blameAnalyzer.analyze({ host: this.#host, file: id });
@@ -217,7 +230,7 @@ export class AnalysisEngine {
       typeErrors,
       status: {
         loc: loc.state,
-        blame: blame ? blame.state : "pending",
+        blame: this.#blame ? (blame ? blame.state : "pending") : "ready",
         typecheck: this.#typeCheckState,
       },
       errors,

@@ -48,11 +48,12 @@ declare module "virtual:tsmigrate" {
 
 ## Options
 
-| Option       | Type      | Default            | Description                                                                      |
-| ------------ | --------- | ------------------ | -------------------------------------------------------------------------------- |
-| `greeting`   | `string`  | `"Hello, Vite 8!"` | Message exposed by `virtual:tsmigrate`, shown on the tool page, logged on start. |
-| `logOnStart` | `boolean` | `true`             | Log the greeting on config resolve and the tool URL on dev startup.              |
-| `toolPort`   | `number`  | `7357`             | Port of the plugin's own tool server (dev only); ephemeral fallback when taken.  |
+| Option       | Type      | Default            | Description                                                                                                          |
+| ------------ | --------- | ------------------ | -------------------------------------------------------------------------------------------------------------------- |
+| `greeting`   | `string`  | `"Hello, Vite 8!"` | Message exposed by `virtual:tsmigrate`, shown on the tool page, logged on start.                                     |
+| `logOnStart` | `boolean` | `true`             | Log the greeting on config resolve and the tool URL on dev startup.                                                  |
+| `toolPort`   | `number`  | `7357`             | Port of the plugin's own tool server (dev only); ephemeral fallback when taken.                                      |
+| `blame`      | `boolean` | `false`            | Enable per-file `git blame` (LoC per author) analysis, shown in the tool. Off by default; needs real commit history. |
 
 ## Development
 

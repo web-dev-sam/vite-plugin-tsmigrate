@@ -160,8 +160,9 @@ test("parses blame porcelain into lines per author", () => {
 });
 
 test("engine produces a complete two-graph snapshot with all facts", async () => {
-  // typeCheckCommand defaults to disabled — deterministic, no runner needed.
-  const engine = new AnalysisEngine(fakeHost());
+  // typeCheckCommand disabled (deterministic, no runner); blame enabled to
+  // assert the queued git-blame path resolves.
+  const engine = new AnalysisEngine(fakeHost(), { blame: true });
   await expect.poll(async () => (await engine.getGraph()).complete, { timeout: 2000 }).toBe(true);
 
   const graph = await engine.getGraph();
@@ -290,7 +291,7 @@ test("engine flows type errors into typeErrors and strictRed", async () => {
   const diagnostics = "src/components/Child.vue(2,7): error TS2322: boom\n";
   const engine = new AnalysisEngine(
     fakeHost(async () => ({ stdout: diagnostics, stderr: "", code: 1 })),
-    ["tsc", "--noEmit", "--pretty", "false"],
+    { typeCheckCommand: ["tsc", "--noEmit", "--pretty", "false"] },
   );
   await expect.poll(async () => (await engine.getGraph()).complete, { timeout: 2000 }).toBe(true);
 
@@ -321,7 +322,7 @@ test("engine treats type-check failure as an error status", async () => {
   // No parseable diagnostics + nonzero exit → the pass failed.
   const engine = new AnalysisEngine(
     fakeHost(async () => ({ stdout: "", stderr: "command not found: tsc", code: 127 })),
-    ["tsc", "--noEmit", "--pretty", "false"],
+    { typeCheckCommand: ["tsc", "--noEmit", "--pretty", "false"] },
   );
   await expect.poll(async () => (await engine.getGraph()).complete, { timeout: 2000 }).toBe(true);
 
@@ -334,7 +335,7 @@ test("engine treats type-check failure as an error status", async () => {
 });
 
 test("typeCheckCommand:false disables the pass without blocking complete", async () => {
-  const engine = new AnalysisEngine(fakeHost(), false);
+  const engine = new AnalysisEngine(fakeHost(), { typeCheckCommand: false });
   await expect.poll(async () => (await engine.getGraph()).complete, { timeout: 2000 }).toBe(true);
 
   const graph = await engine.getGraph();
@@ -344,4 +345,27 @@ test("typeCheckCommand:false disables the pass without blocking complete", async
     expect(node.status.typecheck).toBe("ready");
     expect(node.strictRed).toBe(false);
   }
+});
+
+test("blame is off by default — status ready, empty blame, no git", async () => {
+  let gitCalls = 0;
+  const base = fakeHost();
+  const host: AnalysisHost = {
+    ...base,
+    runGit: (args) => {
+      gitCalls++;
+      return base.runGit(args);
+    },
+  };
+  const engine = new AnalysisEngine(host);
+  await expect.poll(async () => (await engine.getGraph()).complete, { timeout: 2000 }).toBe(true);
+
+  const graph = await engine.getGraph();
+  expect(graph.vue.nodes.length).toBeGreaterThan(0);
+  for (const node of [...graph.vue.nodes, ...graph.full.nodes]) {
+    expect(node.status.blame).toBe("ready");
+    expect(node.blame).toBeNull();
+  }
+  // Blame off ⇒ neither `git blame` nor the HEAD probe runs.
+  expect(gitCalls).toBe(0);
 });
