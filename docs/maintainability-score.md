@@ -17,11 +17,11 @@ We express each module's cost in **LoC-equivalent units** (a "unit" is the
 effort of reading one line once):
 
 $$
-\operatorname{cost}(m) \;=\; \operatorname{loc}(m)\cdot\Bigl(\underbrace{1}_{\text{read}} + \underbrace{\alpha\,\max(0,\,C_e(m)-K)}_{\text{comprehension}} + \underbrace{\beta\,I(m)\,r(m)}_{\text{blast}} + \underbrace{\operatorname{type}(m)}_{\text{type risk}}\Bigr)
+\mathrm{cost}(m) \;=\; \mathrm{loc}(m)\cdot\Bigl(\underbrace{1}_{\text{read}} + \underbrace{\alpha\,\max(0,\,C_e(m)-K)}_{\text{comprehension}} + \underbrace{\beta\,I(m)\,r(m)}_{\text{blast}} + \underbrace{\mathrm{type}(m)}_{\text{type risk}}\Bigr)
 $$
 
 $$
-\operatorname{type}(m) = \begin{cases} \gamma\,\bigl(1 + \delta\,r(m)\bigr) & m \text{ has a type error} \\ 0 & \text{otherwise} \end{cases}
+\mathrm{type}(m) = \begin{cases} \gamma\,\bigl(1 + \delta\,r(m)\bigr) & m \text{ has a type error} \\ 0 & \text{otherwise} \end{cases}
 $$
 
 The whole-codebase cost is the sum, and the score normalises it against the
@@ -29,17 +29,17 @@ The whole-codebase cost is the sum, and the score normalises it against the
 coupling and no type errors:
 
 $$
-\operatorname{floor} = \sum_m \operatorname{loc}(m),
+\mathrm{floor} = \sum_m \mathrm{loc}(m),
 \qquad
-\operatorname{cost} = \sum_m \operatorname{cost}(m),
+\mathrm{cost} = \sum_m \mathrm{cost}(m),
 \qquad
-\boxed{\;\text{score} = 100\cdot\frac{\operatorname{floor}}{\operatorname{cost}}\;}
+\boxed{\;\text{score} = 100\cdot\frac{\mathrm{floor}}{\mathrm{cost}}\;}
 $$
 
 A clean, fully-typed, modular codebase approaches 100; each unit of _excess_
 coupling, structural blast, or type debt drives it down.
 
-Throughout, $\operatorname{loc}(m)$ is **maintainable** source lines: the file
+Throughout, $\mathrm{loc}(m)$ is **maintainable** source lines: the file
 with its `<style>` and `<svg>` blocks removed. CSS and inline vector data are
 not type-checked logic and are not edited line-by-line, so a big icon or a
 large style block does not inflate a file's weight (nor its graph node size).
@@ -85,7 +85,7 @@ factors:
   that imports only _stable_ code stays stable itself, so `import { … } from
 '@vben/icons'` never inflates the consumer's instability.
 
-- **Blast radius** $r(m) = \dfrac{\text{LoC transitively importing } m}{\sum_k \operatorname{loc}(k)} \in [0, 1]$
+- **Blast radius** $r(m) = \dfrac{\text{LoC transitively importing } m}{\sum_k \mathrm{loc}(k)} \in [0, 1]$
   — the fraction of the codebase that would need re-verifying if $m$'s
   behaviour changed. Blast radius is computed over the graph's strongly-connected
   condensation, so an import **cycle** folds its entire LoC into every member's

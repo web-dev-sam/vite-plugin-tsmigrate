@@ -79,9 +79,9 @@ transitively imports it, and pay extra where the compiler can't back you up —
 and normalises that cost against the floor of reading every file once, fully
 typed. Per module $m$:
 
-$$\operatorname{cost}(m) = \operatorname{loc}(m)\cdot\bigl(1 + \alpha\max(0, C_e^{w}(m){-}K) + \beta\,I(m)\,r(m) + \operatorname{type}(m)\bigr)$$
+$$\mathrm{cost}(m) = \mathrm{loc}(m)\cdot\bigl(1 + \alpha\max(0, C_e^{w}(m){-}K) + \beta\,I(m)\,r(m) + \mathrm{type}(m)\bigr)$$
 
-$$\text{score} = 100\cdot\frac{\sum_m \operatorname{loc}(m)}{\sum_m \operatorname{cost}(m)}$$
+$$\text{score} = 100\cdot\frac{\sum_m \mathrm{loc}(m)}{\sum_m \mathrm{cost}(m)}$$
 
 where $C_e^{w}(m)=\sum_{d}I_0(d)$ is the **volatility-weighted** fan-out — each
 import counted by its target's instability, so pulling in a stable barrel like
@@ -91,7 +91,7 @@ comprehension (so ordinary modularity is free). $I = C_e^{w}/(C_e^{w}+C_a)$ is
 the instability (a change-likelihood proxy, so stable foundations aren't
 punished for being widely imported, and importing stable code doesn't make you
 look volatile), $r$ is the fraction of the codebase that transitively imports
-$m$ (cycles fold their whole LoC into every member), and $\operatorname{type}(m) =
+$m$ (cycles fold their whole LoC into every member), and $\mathrm{type}(m) =
 \gamma(1 + \delta\,r)$ for a file carrying type errors — so **type errors are a
 first-class term, weighted by how widely the red file is imported**. A clean,
 fully-typed, modular codebase approaches 100; the panel breaks the score into
