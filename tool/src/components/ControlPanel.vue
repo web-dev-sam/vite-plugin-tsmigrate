@@ -243,7 +243,7 @@ function scoreTone(score: number): string {
       </div>
     </Collapsible>
 
-    <Collapsible title="typing">
+    <Collapsible title="typing" :default-open="false">
       <!-- LoC-weighted typing progress of the shown set. -->
       <Tooltip
         content="LoC-weighted typing progress of the shown set: green lines of code ÷ total lines of code."
@@ -322,7 +322,7 @@ function scoreTone(score: number): string {
     </Collapsible>
 
     <!-- Per-depth typing; click a row to isolate that ring. -->
-    <Collapsible title="by depth">
+    <Collapsible title="by depth" :default-open="false">
       <div class="mb-2 px-2 text-right text-xs font-medium tracking-wide text-muted uppercase">
         % typed
       </div>

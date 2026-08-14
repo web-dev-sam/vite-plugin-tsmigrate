@@ -21,7 +21,7 @@ const open = ref(props.defaultOpen);
 
 <template>
   <section :class="flush ? '' : 'mt-4 border-t border-border/70 pt-4'">
-    <div class="flex items-center justify-between gap-2">
+    <div class="mb-2 flex items-center justify-between gap-2">
       <button
         type="button"
         class="flex flex-1 items-center gap-1.5 text-left text-xs font-medium tracking-wide text-muted uppercase transition-colors hover:text-fg"
