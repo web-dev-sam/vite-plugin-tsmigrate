@@ -78,6 +78,10 @@
   opacity: 0.12;
 }
 
+.node.focus-root {
+  filter: drop-shadow(0 0 6px rgba(255, 255, 255, 0.55));
+}
+
 .link.dim {
   stroke-opacity: 0.04;
 }

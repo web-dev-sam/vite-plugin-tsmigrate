@@ -428,6 +428,9 @@ export function initGraph(opts: InitOptions): GraphController {
     if (!nodeSel || !linkSel || !labelSel) return;
     labelG.attr("display", controls.showRings ? null : "none");
     nodeSel.style("display", (d) => (isHidden(d) ? "none" : null));
+    // The focused root (set by a node click or a hotspot-row click) gets a
+    // subtle glow so it's findable among its isolated dependents/subtree.
+    nodeSel.classed("focus-root", (d) => focus !== null && d.id === focus.root);
     labelSel.style("display", (d) => (isHidden(d) ? "none" : null));
     renderLinks();
     applySearch();
