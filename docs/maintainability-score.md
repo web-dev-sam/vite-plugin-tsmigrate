@@ -127,7 +127,7 @@ the runaway of the naive model.)
   of red files); the three add to 1. This says _why_ the score is what it is.
 - **in cycles** — the fraction of LoC trapped in import cycles.
 - **typed** — LoC-weighted typed fraction (omitted when the type pass is off).
-- **hotspots** — the highest-cost files, sorted, each with its fan-out,
+- **hotspots** — the files dragging the score down most (highest overhead above their own floor), each with its fan-out,
   fan-in, instability, and blast radius. This is where to look first: lower these and
   the score rises.
 

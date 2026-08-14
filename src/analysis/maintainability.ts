@@ -225,7 +225,11 @@ export function scoreMaintainability(graph: Graph): Maintainability {
         }
       : { comprehension: 0, blast: 0, types: 0 };
 
-  hotspots.sort((a, b) => b.cost - a.cost);
+  // Most negative effect first: a file's overhead above its own floor
+  // (cost − loc) is exactly its contribution to costLoc − floorLoc, i.e. how
+  // much it drags the score down. A large file sitting at its floor is not a
+  // hotspot, so sort by overhead, not absolute cost.
+  hotspots.sort((a, b) => b.cost - b.loc - (a.cost - a.loc));
 
   return {
     score: Math.round((100 * totalLoc) / costLoc),

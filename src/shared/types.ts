@@ -110,7 +110,7 @@ export interface Maintainability {
   edges: number;
   /** LoC-weighted typed fraction, or `null` when the type-check pass is off. */
   typeHealth: number | null;
-  /** Highest-cost files first, capped — where to look to raise the score. */
+  /** Biggest score-draggers first (highest overhead above their own floor), capped — where to look to raise the score. */
   hotspots: MaintainabilityHotspot[];
 }
 

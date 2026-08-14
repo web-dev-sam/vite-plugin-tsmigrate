@@ -235,7 +235,7 @@ const scoreOpen = ref(true);
                   >{{ hotspotMeta(h) }}</template
                 >
                 <td class="max-w-[240px] truncate py-0.5 pl-2 first:rounded-l">
-                  <span v-if="h.inCycle" class="text-red">↻ </span>{{ h.file }}
+                  <span v-if="h.inCycle" class="text-red">↻ </span>{{ baseOf(h.file) }}
                 </td>
                 <td class="py-0.5 pr-2 text-right tabular-nums text-muted last:rounded-r">
                   {{ pct(h.blastRadius) }}%

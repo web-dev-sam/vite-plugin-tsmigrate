@@ -460,6 +460,34 @@ function graphOf(edges: [string, string][], f: Map<string, FileFacts>): Graph {
   return makeGraph(new Set(f.keys()), children, f, "/r");
 }
 
+test("hotspots surface the biggest score-draggers first, not the biggest files", () => {
+  // A small red file imported widely (real overhead) vs a large, clean, isolated
+  // file that sits exactly at its own floor (huge cost, zero overhead).
+  const g = graphOf(
+    [
+      ["/r/i1.ts", "/r/hub.ts"],
+      ["/r/i2.ts", "/r/hub.ts"],
+      ["/r/i3.ts", "/r/hub.ts"],
+    ],
+    facts({
+      "/r/hub.ts": { loc: 10, te: 1 },
+      "/r/i1.ts": { loc: 10 },
+      "/r/i2.ts": { loc: 10 },
+      "/r/i3.ts": { loc: 10 },
+      "/r/big.ts": { loc: 1000 },
+    }),
+  );
+  const h = scoreMaintainability(g).hotspots;
+  const hub = h.find((x) => x.file === "hub.ts")!;
+  const big = h.find((x) => x.file === "big.ts")!;
+  // Sorted by overhead (cost − loc): the widely-imported red hub tops the list;
+  // the large clean island ranks below it despite dwarfing it in raw cost.
+  expect(h[0]!.file).toBe("hub.ts");
+  expect(hub.cost - hub.loc).toBeGreaterThan(big.cost - big.loc);
+  expect(big.cost).toBeGreaterThan(hub.cost);
+  expect(h.indexOf(hub)).toBeLessThan(h.indexOf(big));
+});
+
 test("maintainability scores a clean tree far above a tangled ball", () => {
   // Shallow tree: entry imports leaves; leaves import nothing. No cycles.
   const tree = graphOf(
