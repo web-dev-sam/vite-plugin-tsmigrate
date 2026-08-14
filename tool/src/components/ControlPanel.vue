@@ -21,6 +21,8 @@ import TextInput from "../ui/TextInput.vue";
 defineProps<{
   readouts: Readouts | null;
   header: { complete: boolean; appUrl: string | null };
+  /** `false` disables the content-search bar (ripgrep binary not found). */
+  ripgrep: boolean;
 }>();
 const emit = defineEmits<{ depthClick: [height: number] }>();
 
@@ -32,6 +34,7 @@ const includeTs = defineModel<boolean>("includeTs", { required: true });
 const showLinks = defineModel<boolean>("showLinks", { required: true });
 const highlightLinks = defineModel<boolean>("highlightLinks", { required: true });
 const search = defineModel<string>("search", { required: true });
+const contentSearch = defineModel<string>("contentSearch", { required: true });
 const blameGreen = defineModel<boolean>("blameGreen", { required: true });
 const blameRed = defineModel<boolean>("blameRed", { required: true });
 
@@ -112,6 +115,20 @@ function depthTitle(d: DepthRow): string {
     <Section>
       <div class="space-y-3">
         <TextInput v-model="search" clearable placeholder="search component…" />
+        <Tooltip
+          v-if="!ripgrep"
+          content="Content search needs the ripgrep (rg) binary on PATH — not found. Install ripgrep to search file contents by regex."
+        >
+          <div class="opacity-40">
+            <TextInput v-model="contentSearch" disabled placeholder="search contents (regex)…" />
+          </div>
+        </Tooltip>
+        <TextInput
+          v-else
+          v-model="contentSearch"
+          clearable
+          placeholder="search contents (regex, multiline)…"
+        />
         <Field label="colour mode">
           <Select v-model="mode" :options="modeOptions" />
         </Field>
@@ -198,7 +215,7 @@ function depthTitle(d: DepthRow): string {
     </Section>
 
     <footer class="mt-4 border-t border-border/70 pt-4 text-xs text-muted">
-      drag to pan · scroll to zoom · hover a node
+      drag to pan · scroll to zoom · hover a node · double-click for source
     </footer>
   </aside>
 </template>

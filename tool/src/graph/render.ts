@@ -36,6 +36,12 @@ export interface Controls {
   showRings: boolean;
   showBlame: boolean;
   search: string;
+  /**
+   * File paths (relative to root) whose contents match the content-search
+   * regex, or `null` when no content search is active. When set, a node shows
+   * only if its `file` is in the set — ANDed with `search`.
+   */
+  contentMatches: Set<string> | null;
   blameGreen: boolean;
   blameRed: boolean;
   /**
@@ -102,6 +108,8 @@ export interface InitOptions {
   tooltip: HTMLElement;
   /** Fires whenever the shown set or colour mode changes. */
   onReadouts: (readouts: Readouts) => void;
+  /** Fires on a node double-click — opens the source-view modal. */
+  onOpenSource: (node: { id: string; file: string }) => void;
 }
 
 export interface GraphController {
@@ -165,7 +173,7 @@ function toRNode(n: ComponentNode): RNode {
 }
 
 export function initGraph(opts: InitOptions): GraphController {
-  const { tooltip, onReadouts } = opts;
+  const { tooltip, onReadouts, onOpenSource } = opts;
   const svg = d3.select(opts.svg);
   const root = svg.append("g");
   const ringG = root.append("g");
@@ -189,6 +197,7 @@ export function initGraph(opts: InitOptions): GraphController {
     showRings: true,
     showBlame: false,
     search: "",
+    contentMatches: null,
     blameGreen: true,
     blameRed: false,
     showLinks: false,
@@ -417,8 +426,14 @@ export function initGraph(opts: InitOptions): GraphController {
   function applySearch(): void {
     if (!nodeSel || !labelSel) return;
     const q = controls.search.trim().toLowerCase();
-    const hit = (d: RNode) => d.name.toLowerCase().includes(q) || d.id.toLowerCase().includes(q);
-    if (!q) {
+    const cm = controls.contentMatches;
+    // Two independent filters, ANDed: the name/id query and the content-search
+    // set. A node is a hit only when it passes both active filters.
+    const nameHit = (d: RNode) =>
+      !q || d.name.toLowerCase().includes(q) || d.id.toLowerCase().includes(q);
+    const contentHit = (d: RNode) => cm === null || cm.has(d.file);
+    const hit = (d: RNode) => nameHit(d) && contentHit(d);
+    if (!q && cm === null) {
       nodeSel.classed("dim", false).attr("r", (d) => nodeR(d));
       labelSel.classed("dim", false);
       return;
@@ -591,12 +606,18 @@ export function initGraph(opts: InitOptions): GraphController {
         focus = already ? null : { root: d.id, set: subtree(d.id) };
         refresh();
       })
+      .on("dblclick", (e: MouseEvent, d) => {
+        // Own the double-click so d3-zoom's dblclick-to-zoom doesn't also fire.
+        e.stopPropagation();
+        e.preventDefault();
+        onOpenSource({ id: d.id, file: d.file });
+      })
       .on("mouseover", (e: MouseEvent, d) => {
         const nbr = adj.get(d.id)!;
         // While a search is active it owns the node/label dimming — hover must
         // not reveal filtered-out nodes, so only the link highlight + tooltip
         // react. Without a search, hover dims everything outside the neighbourhood.
-        if (!controls.search.trim()) {
+        if (!controls.search.trim() && controls.contentMatches === null) {
           nodeSel!.classed("dim", (o) => o !== d && !nbr.has(o.id));
           labelSel!.classed("dim", (o) => o !== d && !nbr.has(o.id));
         }

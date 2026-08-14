@@ -3,7 +3,7 @@
  * A styled single-line text input. Two-way binds its value. When `clearable`,
  * a clear (×) button appears on the right edge while the field is non-empty.
  */
-defineProps<{ placeholder?: string; clearable?: boolean }>();
+defineProps<{ placeholder?: string; clearable?: boolean; disabled?: boolean }>();
 const value = defineModel<string>({ required: true });
 </script>
 
@@ -12,12 +12,13 @@ const value = defineModel<string>({ required: true });
     <input
       v-model="value"
       :placeholder="placeholder"
+      :disabled="disabled"
       autocomplete="off"
-      class="box-border w-full rounded-md border border-border bg-canvas px-3 py-2 text-fg outline-none transition placeholder:text-muted focus:border-accent focus:ring-1 focus:ring-accent/50"
+      class="box-border w-full rounded-md border border-border bg-canvas px-3 py-2 text-fg outline-none transition placeholder:text-muted focus:border-accent focus:ring-1 focus:ring-accent/50 disabled:cursor-not-allowed"
       :class="clearable ? 'pr-9' : ''"
     />
     <button
-      v-if="clearable && value"
+      v-if="clearable && value && !disabled"
       type="button"
       aria-label="Clear search"
       title="Clear"

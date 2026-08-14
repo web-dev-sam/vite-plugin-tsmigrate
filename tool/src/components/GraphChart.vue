@@ -9,7 +9,10 @@ import { type Controls, type GraphController, type Readouts, initGraph } from ".
  * and surfaces the renderer's computed readouts back up as an event.
  */
 const props = defineProps<{ graph: Graph; controls: Controls }>();
-const emit = defineEmits<{ readouts: [Readouts] }>();
+const emit = defineEmits<{
+  readouts: [Readouts];
+  openSource: [{ id: string; file: string }];
+}>();
 
 const svgRef = ref<SVGSVGElement | null>(null);
 const tipRef = ref<HTMLElement | null>(null);
@@ -21,6 +24,7 @@ onMounted(() => {
     svg: svgRef.value,
     tooltip: tipRef.value,
     onReadouts: (r) => emit("readouts", r),
+    onOpenSource: (n) => emit("openSource", n),
   });
   // Controls first so the initial paint honours the live colour mode / filters.
   controller.setControls(props.controls);

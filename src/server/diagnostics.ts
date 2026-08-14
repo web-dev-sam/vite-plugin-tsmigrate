@@ -5,7 +5,11 @@ import type { ResolvedOptions } from "../options.ts";
 import type { Diagnostics } from "../shared/types.ts";
 
 /** Quick environment summary shown in the tool header. */
-export function collectDiagnostics(server: ViteDevServer, options: ResolvedOptions): Diagnostics {
+export function collectDiagnostics(
+  server: ViteDevServer,
+  options: ResolvedOptions,
+  ripgrep: boolean,
+): Diagnostics {
   const root = server.config.root;
 
   let vueVersion: string | null = null;
@@ -31,5 +35,6 @@ export function collectDiagnostics(server: ViteDevServer, options: ResolvedOptio
     vueVersion,
     vueModules,
     plugins: server.config.plugins.map((plugin) => plugin.name),
+    ripgrep,
   };
 }

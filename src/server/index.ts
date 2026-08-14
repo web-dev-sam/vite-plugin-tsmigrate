@@ -5,7 +5,7 @@ import { patchPrintUrls } from "../log.ts";
 import type { ResolvedOptions } from "../options.ts";
 import { createApiHandler } from "./routes.ts";
 import { createClientHandler, FALLBACK_HTML, resolveClientDir } from "./static.ts";
-import { createAnalysisHost, wireInvalidation } from "./vite-adapter.ts";
+import { createAnalysisHost, createContentSearch, wireInvalidation } from "./vite-adapter.ts";
 
 /**
  * The plugin's own tool: a prebuilt Vue app plus a JSON API, served from a
@@ -28,7 +28,8 @@ export async function startToolServer(
     blameAliases: options.blameAliases,
   });
   wireInvalidation(server, engine);
-  const handleApi = createApiHandler(server, engine, options);
+  const search = await createContentSearch(server.config.root);
+  const handleApi = createApiHandler(server, engine, options, search);
 
   const clientDir = resolveClientDir();
   const serveClient = clientDir ? createClientHandler(clientDir) : null;

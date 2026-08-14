@@ -1,5 +1,6 @@
 import { execFile } from "node:child_process";
 import { readFile } from "node:fs/promises";
+import { isAbsolute, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
 import type { ViteDevServer } from "vite";
 import type { AnalysisEngine } from "../analysis/engine.ts";
@@ -65,6 +66,78 @@ export function createAnalysisHost(server: ViteDevServer): AnalysisHost {
       return promise;
     },
   };
+}
+
+/**
+ * A multiline content search backed by the `rg` (ripgrep) binary. Kept here
+ * with the other process spawning; analysis/ stays pure. `available` is probed
+ * once at construction — the UI disables the content-search bar when false.
+ */
+export interface ContentSearch {
+  available: boolean;
+  /**
+   * Run a multiline regex over the project tree, resolving with matching paths
+   * relative to root (matching `ComponentNode.file`). Rejects on an invalid
+   * regex so the caller can surface it; empty query → no matches.
+   */
+  search(pattern: string): Promise<string[]>;
+}
+
+export async function createContentSearch(root: string): Promise<ContentSearch> {
+  let available = false;
+  try {
+    await execFileAsync("rg", ["--version"], { timeout: 2000 });
+    available = true;
+  } catch {
+    available = false;
+  }
+  return {
+    available,
+    async search(pattern) {
+      if (!available || !pattern) return [];
+      try {
+        // -l: files with matches; -0: NUL-separated; -U: multiline. rg honours
+        // .gitignore and skips binaries by default. `--` guards regex dashes.
+        const { stdout } = await execFileAsync(
+          "rg",
+          ["--multiline", "--files-with-matches", "--null", "--", pattern, "."],
+          { cwd: root, maxBuffer: 16 * 1024 * 1024 },
+        );
+        // Searching `.` prefixes every path with `./`; strip it so results line
+        // up with `ComponentNode.file` (a bare `relative(root, id)`).
+        return stdout
+          .split("\0")
+          .filter(Boolean)
+          .map((p) => (p.startsWith("./") ? p.slice(2) : p));
+      } catch (error) {
+        // exit 1 = no matches (normal); exit 2 = bad regex (surface it).
+        const err = error as { code?: number | string; stderr?: string };
+        if (err.code === 1) return [];
+        throw new Error(err.stderr?.trim() || "search failed");
+      }
+    },
+  };
+}
+
+/**
+ * Read one project file for the source-view modal, resolving `id` (an absolute
+ * module id) against `root`. Returns `null` when the path escapes the root or
+ * the file is unreadable — the caller answers 404. Kept beside the other fs
+ * access; analysis/ stays pure.
+ */
+export async function readProjectFile(
+  root: string,
+  id: string,
+): Promise<{ file: string; content: string } | null> {
+  const abs = isAbsolute(id) ? resolve(id) : resolve(root, id);
+  // Confine reads to the project tree — no `..` traversal, no absolute escapes.
+  if (abs !== root && !abs.startsWith(root + sep)) return null;
+  try {
+    const content = await readFile(abs, "utf8");
+    return { file: relative(root, abs), content };
+  } catch {
+    return null;
+  }
 }
 
 /** Forward watcher events to the engine; detach when the server closes. */

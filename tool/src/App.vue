@@ -1,9 +1,10 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, reactive, ref } from "vue";
+import { computed, onMounted, onUnmounted, reactive, ref, watch } from "vue";
 import type { ComponentGraph, Diagnostics } from "../../src/shared/types.ts";
-import { fetchDiagnostics, fetchGraph } from "./api/client.ts";
+import { fetchDiagnostics, fetchGraph, fetchSearch } from "./api/client.ts";
 import ControlPanel from "./components/ControlPanel.vue";
 import GraphChart from "./components/GraphChart.vue";
+import SourceModal from "./components/SourceModal.vue";
 import type { Controls, Readouts } from "./graph/render.ts";
 
 /**
@@ -28,9 +29,17 @@ const view = reactive({
   showLinks: false,
   highlightLinks: false,
   search: "",
+  contentSearch: "",
   blameGreen: true,
   blameRed: false,
 });
+
+// Whether the server found the ripgrep binary (gates the content-search bar).
+const ripgrep = computed(() => diag.value?.ripgrep ?? false);
+
+// Files whose contents match the content-search regex; null = no active
+// content query. The renderer ANDs this with the name/id search.
+const contentMatches = ref<Set<string> | null>(null);
 
 // The subset the renderer consumes (TS-swap is resolved into `activeGraph`).
 const controls = computed<Controls>(() => ({
@@ -39,6 +48,7 @@ const controls = computed<Controls>(() => ({
   showRings: view.showRings,
   showBlame: view.showBlame,
   search: view.search,
+  contentMatches: contentMatches.value,
   blameGreen: view.blameGreen,
   blameRed: view.blameRed,
   showLinks: view.showLinks,
@@ -57,6 +67,10 @@ const header = computed(() => ({
 }));
 
 const chart = ref<InstanceType<typeof GraphChart> | null>(null);
+
+// The node whose source the modal is showing (null = closed). Set on a node
+// double-click from the chart; the modal fetches + highlights by id.
+const source = ref<{ id: string; file: string } | null>(null);
 
 let timer: ReturnType<typeof setTimeout> | undefined;
 let stopped = false;
@@ -90,6 +104,36 @@ async function poll() {
   timer = setTimeout(poll, graph.value?.complete ? 2000 : 300);
 }
 
+// Content search runs server-side via ripgrep. Debounce keystrokes, and guard
+// against out-of-order responses with a monotonic token so the latest query
+// always wins. Empty query clears the filter (null = inactive).
+let searchTimer: ReturnType<typeof setTimeout> | undefined;
+let searchSeq = 0;
+watch(
+  () => view.contentSearch,
+  (pattern) => {
+    clearTimeout(searchTimer);
+    const query = pattern.trim();
+    if (!query) {
+      searchSeq++;
+      contentMatches.value = null;
+      return;
+    }
+    searchTimer = setTimeout(async () => {
+      const seq = ++searchSeq;
+      try {
+        const files = await fetchSearch(query);
+        if (seq === searchSeq) contentMatches.value = new Set(files);
+      } catch (err) {
+        if (seq !== searchSeq) return;
+        // Invalid regex (or search failure): show the message and match nothing.
+        error.value = String(err);
+        contentMatches.value = new Set();
+      }
+    }, 250);
+  },
+);
+
 onMounted(async () => {
   try {
     diag.value = await fetchDiagnostics();
@@ -102,6 +146,7 @@ onMounted(async () => {
 onUnmounted(() => {
   stopped = true;
   clearTimeout(timer);
+  clearTimeout(searchTimer);
 });
 </script>
 
@@ -112,6 +157,7 @@ onUnmounted(() => {
     :graph="activeGraph"
     :controls="controls"
     @readouts="readouts = $event"
+    @open-source="source = $event"
   />
 
   <ControlPanel
@@ -123,10 +169,12 @@ onUnmounted(() => {
     v-model:show-links="view.showLinks"
     v-model:highlight-links="view.highlightLinks"
     v-model:search="view.search"
+    v-model:content-search="view.contentSearch"
     v-model:blame-green="view.blameGreen"
     v-model:blame-red="view.blameRed"
     :readouts="readouts"
     :header="header"
+    :ripgrep="ripgrep"
     @depth-click="chart?.toggleDepth($event)"
   />
 
@@ -136,4 +184,6 @@ onUnmounted(() => {
   >
     {{ error }}
   </p>
+
+  <SourceModal :node-id="source?.id ?? null" :file="source?.file ?? null" @close="source = null" />
 </template>

@@ -93,4 +93,28 @@ export interface Diagnostics {
   /** `.vue` module ids currently in the dev server's module graph. */
   vueModules: string[];
   plugins: string[];
+  /** `true` when the `rg` (ripgrep) binary is available — gates content search. */
+  ripgrep: boolean;
+}
+
+/**
+ * Payload of `GET /api/search?q=<regex>` — files whose contents match the
+ * (multiline) ripgrep regex, as paths relative to the project root (matching
+ * `ComponentNode.file`). `error` is set instead when the regex is invalid.
+ */
+export interface SearchResult {
+  files: string[];
+  error?: string;
+}
+
+/**
+ * Payload of `GET /api/source?id=<absolute module id>` — the raw file contents
+ * for the source-view modal, with the project-relative path and a language id
+ * for the client-side highlighter. `error` is set when the file is missing or
+ * resolves outside the project root.
+ */
+export interface SourceResult {
+  file: string;
+  content: string;
+  error?: string;
 }
