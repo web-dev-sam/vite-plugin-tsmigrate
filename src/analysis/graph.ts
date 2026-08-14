@@ -1,4 +1,4 @@
-import { extname, join, sep } from "node:path";
+import { dirname, extname, join, sep } from "node:path";
 import type { ComponentEdge } from "../shared/types.ts";
 import type { AnalysisHost } from "./host.ts";
 import { extractSfcScripts, parseImports } from "./imports.ts";
@@ -33,11 +33,45 @@ export interface CrawlResult {
   rawEdges: ComponentEdge[];
 }
 
+/** Whether the crawl can follow this entry (a script module or an SFC). */
+const isCrawlableEntry = (id: string): boolean => {
+  const ext = extname(id.split("?")[0]);
+  return ext === ".vue" || SCRIPT_EXTS[ext] === true;
+};
+
+/** Last-resort entry paths when nothing is configured and there's no index.html. */
+const DEFAULT_ENTRIES = [
+  "./src/main.ts",
+  "./src/main.tsx",
+  "./src/main.js",
+  "./src/main.jsx",
+  "./src/main.mts",
+  "./src/main.mjs",
+];
+
 /**
- * Find the app entry module: the `<script type="module">` of the root
- * index.html (Vite convention), falling back to `src/main.{ts,js}`.
+ * Resolve the app's crawl roots, in priority order:
+ *   1. build-configured entries (`build.rollupOptions.input`) — for apps that
+ *      serve their module script from outside a static `index.html`, e.g.
+ *      Laravel's `@vite('resources/js/app.ts')` in a Blade template, or
+ *      library / multi-page builds. Non-script/SFC entries (CSS) are dropped.
+ *   2. the root `index.html`'s first `<script type="module" src>` (Vite's
+ *      default single-page convention).
+ *   3. `src/main.{ts,tsx,js,jsx,mts,mjs}` as a last resort.
+ *
+ * Returns every resolved root (deduped); empty only when nothing resolves.
  */
-export async function findEntry(host: AnalysisHost): Promise<string | null> {
+export async function findEntries(host: AnalysisHost): Promise<string[]> {
+  const configured: string[] = [];
+  for (const entry of host.configuredEntries()) {
+    if (isCrawlableEntry(entry) && (await host.readFile(entry)) !== null) {
+      configured.push(entry);
+    }
+  }
+  if (configured.length > 0) {
+    return [...new Set(configured)];
+  }
+
   const indexHtml = join(host.root, "index.html");
   const html = await host.readFile(indexHtml);
   // First `<script type="module">` that has a `src`, regardless of attribute
@@ -54,24 +88,42 @@ export async function findEntry(host: AnalysisHost): Promise<string | null> {
       break;
     }
   }
-  const candidates = src ? [src] : ["./src/main.ts", "./src/main.js"];
+  const candidates = src ? [src] : DEFAULT_ENTRIES;
   for (const candidate of candidates) {
     const resolved = await host.resolve(candidate, indexHtml);
     if (resolved) {
-      return resolved;
+      return [resolved];
     }
   }
-  return null;
+  return [];
 }
 
 /**
- * BFS the import graph from the entry. Nodes are `.vue` files; edges connect
- * components, collapsing pass-through modules (barrels, composables):
- * `A.vue → shared/index.ts → B.vue` becomes `A → B`.
+ * BFS the import graph from one or more entry roots. Nodes are `.vue` files;
+ * edges connect components, collapsing pass-through modules (barrels,
+ * composables): `A.vue → shared/index.ts → B.vue` becomes `A → B`.
  */
-export async function crawlGraph(host: AnalysisHost, entry: string): Promise<CrawlResult> {
+export async function crawlGraph(host: AnalysisHost, entries: string[]): Promise<CrawlResult> {
   const directImports = new Map<string, string[]>();
   const vueNodes = new Set<string>();
+
+  // A resolved target is a crawlable project module: under the root, not a
+  // virtual module or a dependency, and a script/SFC by extension.
+  const accept = (target: string | null): string | null => {
+    if (!target) {
+      return null;
+    }
+    const clean = target.split("?")[0];
+    if (
+      clean.startsWith("\0") ||
+      (clean !== host.root && !clean.startsWith(host.root + sep)) ||
+      clean.includes("/node_modules/")
+    ) {
+      return null;
+    }
+    const ext = extname(clean);
+    return ext === ".vue" || SCRIPT_EXTS[ext] ? clean : null;
+  };
 
   const resolveModuleImports = async (file: string): Promise<string[]> => {
     const code = await host.readFile(file);
@@ -79,31 +131,29 @@ export async function crawlGraph(host: AnalysisHost, entry: string): Promise<Cra
       return [];
     }
     const source = file.endsWith(".vue") ? extractSfcScripts(code) : code;
-    const resolved: string[] = [];
-    for (const spec of parseImports(source)) {
-      const target = await host.resolve(spec, file);
-      if (!target) {
-        continue;
+    const { specifiers, globs } = parseImports(source);
+    const resolved = new Set<string>();
+    for (const spec of specifiers) {
+      const clean = accept(await host.resolve(spec, file));
+      if (clean) {
+        resolved.add(clean);
       }
-      const clean = target.split("?")[0];
-      if (
-        clean.startsWith("\0") ||
-        (clean !== host.root && !clean.startsWith(host.root + sep)) ||
-        clean.includes("/node_modules/")
-      ) {
-        continue;
-      }
-      const ext = extname(clean);
-      if (ext !== ".vue" && !SCRIPT_EXTS[ext]) {
-        continue;
-      }
-      resolved.push(clean);
     }
-    return resolved;
+    // Follow `import.meta.glob` / computed dynamic imports by expanding their
+    // patterns against the filesystem (relative to this module's directory).
+    if (globs.length > 0) {
+      for (const hit of await host.glob(globs, dirname(file))) {
+        const clean = accept(hit);
+        if (clean) {
+          resolved.add(clean);
+        }
+      }
+    }
+    return [...resolved];
   };
 
   // Discover every reachable project module.
-  const queue = [entry];
+  const queue = [...entries];
   while (queue.length > 0) {
     const file = queue.shift()!;
     if (directImports.has(file)) {

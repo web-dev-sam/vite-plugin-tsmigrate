@@ -5,6 +5,8 @@ import { createLogger, createServer } from "vite";
 import { expect, test } from "vite-plus/test";
 import { type ComponentGraph, type Diagnostics, tsmigrate } from "../src/index.ts";
 import { listenTool, stopToolServer } from "../src/server/index.ts";
+import { createAnalysisHost } from "../src/server/vite-adapter.ts";
+import { crawlGraph, findEntries } from "../src/analysis/graph.ts";
 
 function captureLogger(messages: string[]) {
   const logger = createLogger("info", { allowClearScreen: false });
@@ -16,6 +18,41 @@ function captureLogger(messages: string[]) {
 
 test("returns a plugin using the conventional vite-plugin-* name", () => {
   expect(tsmigrate().name).toBe("vite-plugin-tsmigrate");
+});
+
+// Regression: Laravel/Vue apps (and any app served via a framework template
+// with `@vite('resources/js/app.ts')`) have NO root index.html — the entry is
+// declared in `build.rollupOptions.input`. The adapter must surface it via
+// `configuredEntries()` so the crawl produces a graph instead of 0 nodes.
+// Exercises the real Vite resolver through the adapter, end to end.
+test("crawls entries from build config when the app has no index.html", async () => {
+  const root = fileURLToPath(new URL("./fixtures/laravel", import.meta.url));
+  const entry = fileURLToPath(new URL("./fixtures/laravel/resources/js/app.ts", import.meta.url));
+  const server = await createServer({
+    configFile: false,
+    root,
+    logLevel: "silent",
+    build: { rollupOptions: { input: entry } },
+    plugins: [tsmigrate({ logOnStart: false, toolPort: 0 })],
+  });
+
+  try {
+    const host = createAnalysisHost(server);
+    expect(host.configuredEntries()).toContain(entry);
+
+    const entries = await findEntries(host);
+    expect(entries).toContain(entry);
+
+    const { nodes, files } = await crawlGraph(host, entries);
+    // The .vue tree reachable from the config entry is found (was empty before).
+    expect(nodes.some((id) => id.endsWith("/App.vue"))).toBe(true);
+    expect(nodes.some((id) => id.endsWith("/Child.vue"))).toBe(true);
+    // import.meta.glob("./views/*.vue") expanded via the adapter's real glob.
+    expect(nodes.some((id) => id.endsWith("/views/Dashboard.vue"))).toBe(true);
+    expect(files.map((f) => f.id)).toContain(entry);
+  } finally {
+    await server.close();
+  }
 });
 
 test("analyses the playground app and serves the component graph", async () => {

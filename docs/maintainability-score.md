@@ -16,25 +16,25 @@ expected cost of a change and invert it.
 We express each module's cost in **LoC-equivalent units** (a "unit" is the
 effort of reading one line once):
 
-$$
+```math
 \mathrm{cost}(m) \;=\; \mathrm{loc}(m)\cdot\Bigl(\underbrace{1}_{\text{read}} + \underbrace{\alpha\,\max(0,\,C_e(m)-K)}_{\text{comprehension}} + \underbrace{\beta\,I(m)\,r(m)}_{\text{blast}} + \underbrace{\mathrm{type}(m)}_{\text{type risk}}\Bigr)
-$$
+```
 
-$$
+```math
 \mathrm{type}(m) = \begin{cases} \gamma\,\bigl(1 + \delta\,r(m)\bigr) & m \text{ has a type error} \\ 0 & \text{otherwise} \end{cases}
-$$
+```
 
 The whole-codebase cost is the sum, and the score normalises it against the
 **floor** — the irreducible cost of reading every file once, with no excess
 coupling and no type errors:
 
-$$
+```math
 \mathrm{floor} = \sum_m \mathrm{loc}(m),
 \qquad
 \mathrm{cost} = \sum_m \mathrm{cost}(m),
 \qquad
 \boxed{\;\text{score} = 100\cdot\frac{\mathrm{floor}}{\mathrm{cost}}\;}
-$$
+```
 
 A clean, fully-typed, modular codebase approaches 100; each unit of _excess_
 coupling, structural blast, or type debt drives it down.
@@ -50,9 +50,9 @@ All quantities come from the **full module graph** (`.vue` + `.ts`, raw import
 edges — not the barrel-collapsed `vue` view), where an edge $u \to v$ means
 "$u$ imports $v$".
 
-### Comprehension — $\alpha\,\max(0,\,C_e^{w}(m)-K)$
+### Comprehension — $`\alpha\,\max(0,\,C_e^{w}(m)-K)`$
 
-$C_e^{w}(m)=\sum_{d\,\in\,\text{imports}(m)} I_0(d)$ is the **volatility-weighted
+$`C_e^{w}(m)=\sum_{d\,\in\,\text{imports}(m)} I_0(d)`$ is the **volatility-weighted
 fan-out**: each import is counted by how unstable its target is. $I_0(d)$ is the
 raw Martin instability of the imported module (see [Blast](#blast--betaimr)),
 computed in a first pass. Depending on a **stable** module — an icon or
@@ -65,7 +65,7 @@ for the excess. This refines the naive "charge every import equally" model
 ~65) with a second refinement: importing seven icons is not the same as
 importing seven churning stores.
 
-### Blast — $\beta\,I(m)\,r(m)$
+### Blast — $`\beta\,I(m)\,r(m)`$
 
 This is the cost of _behavioural_ ripple: change a widely-depended-upon module
 and you must re-reason about, re-review, and re-test everything downstream. It
@@ -92,7 +92,7 @@ factors:
   blast radius (cycle members are mutual dependents). A cycle is therefore
   penalised _through_ blast rather than by an ad-hoc constant.
 
-### Type risk — $\gamma\,(1 + \delta\,r(m))$ for red files
+### Type risk — $`\gamma\,(1 + \delta\,r(m))`$ for red files
 
 This is where type errors enter the score, as a **first-class term** — the
 graph is a TypeScript-migration view, and the score must track red → green.

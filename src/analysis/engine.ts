@@ -6,7 +6,7 @@ import type {
 } from "../shared/types.ts";
 import { applyBlameAliases, blameAnalyzer, locAnalyzer } from "./analyzers/index.ts";
 import { FactStore } from "./cache.ts";
-import { type CrawlFile, crawlGraph, findEntry } from "./graph.ts";
+import { type CrawlFile, crawlGraph, findEntries } from "./graph.ts";
 import type { AnalysisHost } from "./host.ts";
 import { type FileFacts, makeGraph } from "./topology.ts";
 import { scoreMaintainability } from "./maintainability.ts";
@@ -111,9 +111,9 @@ export class AnalysisEngine {
     // client's `?since=` probe report "unchanged" against stale data).
     while (this.graphDirty) {
       this.graphDirty = false;
-      const entry = await findEntry(this.host);
-      const crawl = entry
-        ? await crawlGraph(this.host, entry)
+      const entries = await findEntries(this.host);
+      const crawl = entries.length
+        ? await crawlGraph(this.host, entries)
         : { nodes: [], edges: [], files: [], rawEdges: [] };
       this.vueNodes = crawl.nodes;
       this.collapsedEdges = crawl.edges;

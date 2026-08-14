@@ -44,7 +44,8 @@
     "prepublishOnly": "vp run build"
   },
   "dependencies": {
-    "picocolors": "^1.1.1"
+    "picocolors": "^1.1.1",
+    "tinyglobby": "^0.2.15"
   },
   "devDependencies": {
     "@types/node": "^26.1.1",

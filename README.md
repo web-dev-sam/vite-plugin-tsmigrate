@@ -79,13 +79,15 @@ transitively imports it, and pay extra where the compiler can't back you up —
 and normalises that cost against the floor of reading every file once, fully
 typed. Per module $m$:
 
-$$\mathrm{cost}(m) = \mathrm{loc}(m)\cdot\bigl(1 + \alpha\max(0, C_e^{w}(m){-}K) + \beta\,I(m)\,r(m) + \mathrm{type}(m)\bigr)$$
+```math
+\mathrm{cost}(m) = \mathrm{loc}(m)\cdot\bigl(1 + \alpha\max(0, C_e^{w}(m){-}K) + \beta\,I(m)\,r(m) + \mathrm{type}(m)\bigr)
+```
 
 $$\text{score} = 100\cdot\frac{\sum_m \mathrm{loc}(m)}{\sum_m \mathrm{cost}(m)}$$
 
 where:
 
-$$
+```math
 \begin{aligned}
 \alpha &= \text{excess-coupling weight (only weighted fan-out above the budget } K \text{ is charged)} \\
 \beta &= \text{change-blast weight} \\
@@ -98,7 +100,7 @@ I(m) &= \frac{C_e^{w}(m)}{C_e^{w}(m) + C_a(m)} \quad \text{instability (change-l
 r(m) &= \text{fraction of the codebase that transitively imports } m \text{ (cycles fold in their whole LoC)} \\
 \mathrm{type}(m) &= \gamma\,(1 + \delta\,r) \text{ if } m \text{ carries type errors, else } 0
 \end{aligned}
-$$
+```
 
 A clean, fully-typed, modular codebase approaches 100; the panel breaks the
 score into its drivers (excess coupling / change blast / type errors) plus the

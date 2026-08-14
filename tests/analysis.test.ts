@@ -3,7 +3,7 @@ import { expect, test } from "vite-plus/test";
 import { applyBlameAliases, parseBlamePorcelain } from "../src/analysis/analyzers/blame.ts";
 import { locAnalyzer } from "../src/analysis/analyzers/loc.ts";
 import { AnalysisEngine } from "../src/analysis/engine.ts";
-import { crawlGraph, findEntry } from "../src/analysis/graph.ts";
+import { crawlGraph, findEntries } from "../src/analysis/graph.ts";
 import type { AnalysisHost } from "../src/analysis/host.ts";
 import { scoreMaintainability } from "../src/analysis/maintainability.ts";
 import { computeHeights, type FileFacts, groupOf, makeGraph } from "../src/analysis/topology.ts";
@@ -42,6 +42,8 @@ const BLAME_FIXTURE = [
 function fakeHost(exec?: AnalysisHost["exec"]): AnalysisHost {
   return {
     root: ROOT,
+    configuredEntries: () => [],
+    glob: async () => [],
     async resolve(spec, importer) {
       const base = spec.startsWith(".")
         ? join(dirname(importer), spec)
@@ -72,11 +74,11 @@ function fakeHost(exec?: AnalysisHost["exec"]): AnalysisHost {
 }
 
 test("finds the entry from index.html", async () => {
-  expect(await findEntry(fakeHost())).toBe("/app/src/main.ts");
+  expect(await findEntries(fakeHost())).toEqual(["/app/src/main.ts"]);
 });
 
 test("crawls components and collapses barrels into direct edges", async () => {
-  const { nodes, edges } = await crawlGraph(fakeHost(), "/app/src/main.ts");
+  const { nodes, edges } = await crawlGraph(fakeHost(), ["/app/src/main.ts"]);
   expect(nodes).toEqual([
     "/app/src/App.vue",
     "/app/src/components/Child.vue",
@@ -108,6 +110,8 @@ test("crawls Vue 2 options-API SFCs and a .js entry", async () => {
   };
   const host: AnalysisHost = {
     root: "/v2",
+    configuredEntries: () => [],
+    glob: async () => [],
     async resolve(spec, importer) {
       const base = spec.startsWith(".")
         ? join(dirname(importer), spec)
@@ -135,15 +139,140 @@ test("crawls Vue 2 options-API SFCs and a .js entry", async () => {
     },
   };
 
-  const entry = await findEntry(host);
-  expect(entry).toBe("/v2/src/main.js");
-  const { nodes, edges } = await crawlGraph(host, entry!);
+  const entries = await findEntries(host);
+  expect(entries).toEqual(["/v2/src/main.js"]);
+  const { nodes, edges } = await crawlGraph(host, entries);
   expect(nodes).toContain("/v2/src/App.vue");
   expect(nodes).toContain("/v2/src/components/Widget.vue");
   expect(edges).toContainEqual({
     from: "/v2/src/App.vue",
     to: "/v2/src/components/Widget.vue",
   });
+});
+
+// Laravel/Vue (and any app served via a Blade/framework template with
+// `@vite('resources/js/app.ts')`) has NO root index.html. The entry lives in
+// the build config's `input`, surfaced by the host as `configuredEntries()`.
+// Regression: findEntries must crawl from those roots, or the graph is empty
+// despite a full project. See the empty-graph bug on real Laravel apps.
+test("crawls from configured build entries when there is no index.html", async () => {
+  const LARAVEL: Record<string, string> = {
+    "/laravel/resources/js/app.ts": 'import App from "./App.vue";\n',
+    "/laravel/resources/js/App.vue":
+      '<script setup lang="ts">\nimport Child from "./components/Child.vue";\n</script>\n<template><Child /></template>\n',
+    "/laravel/resources/js/components/Child.vue": "<template><p>child</p></template>\n",
+  };
+  const host: AnalysisHost = {
+    root: "/laravel",
+    // No index.html; laravel-vite-plugin declares the JS entry as input. CSS
+    // entries are also configured and must be ignored by the crawl.
+    configuredEntries: () => ["/laravel/resources/css/app.css", "/laravel/resources/js/app.ts"],
+    glob: async () => [],
+    async resolve(spec, importer) {
+      const base = spec.startsWith(".") ? join(dirname(importer), spec) : null;
+      if (!base) {
+        return null;
+      }
+      for (const candidate of [base, `${base}.ts`, `${base}.vue`, join(base, "index.ts")]) {
+        if (candidate in LARAVEL) {
+          return candidate;
+        }
+      }
+      return null;
+    },
+    async readFile(path) {
+      return LARAVEL[path] ?? null;
+    },
+    async runGit() {
+      return "";
+    },
+    async exec() {
+      return { stdout: "", stderr: "", code: 0 };
+    },
+  };
+
+  // No index.html anywhere — the entry comes purely from configuredEntries,
+  // and the .css entry is dropped (not a script/SFC).
+  const entries = await findEntries(host);
+  expect(entries).toEqual(["/laravel/resources/js/app.ts"]);
+
+  const { nodes, files } = await crawlGraph(host, entries);
+  expect(nodes).toContain("/laravel/resources/js/App.vue");
+  expect(nodes).toContain("/laravel/resources/js/components/Child.vue");
+  // The full module view includes the .ts entry too.
+  expect(files.map((f) => f.id)).toContain("/laravel/resources/js/app.ts");
+});
+
+// Large apps register lazy routes/components by glob or by computed dynamic
+// import — the specifier is never a single literal path. Regression: the crawl
+// must expand `import.meta.glob(...)` and ``import(`./x/${v}.vue`)`` (via
+// host.glob) into real nodes, or such apps show an almost-empty graph.
+test("expands import.meta.glob and computed dynamic imports into nodes", async () => {
+  const GROOT = "/g";
+  const GFILES: Record<string, string> = {
+    "/g/src/main.ts": 'import "./router";\n',
+    "/g/src/router.ts":
+      'const pages = import.meta.glob("./views/*.vue");\n' +
+      "export const load = (n: string) => import(`./widgets/${n}.vue`);\n",
+    "/g/src/views/Home.vue": "<template><p>home</p></template>\n",
+    "/g/src/views/About.vue": "<template><p>about</p></template>\n",
+    "/g/src/widgets/Chart.vue": "<template><p>chart</p></template>\n",
+    "/g/src/widgets/Table.vue": "<template><p>table</p></template>\n",
+  };
+  const host: AnalysisHost = {
+    root: GROOT,
+    configuredEntries: () => [],
+    async resolve(spec, importer) {
+      if (!spec.startsWith(".")) {
+        return null;
+      }
+      const base = join(dirname(importer), spec);
+      for (const candidate of [base, `${base}.ts`, `${base}.vue`]) {
+        if (candidate in GFILES) {
+          return candidate;
+        }
+      }
+      return null;
+    },
+    async glob(patterns, fromDir) {
+      const hits = new Set<string>();
+      for (const pattern of patterns) {
+        const abs = pattern.startsWith("/")
+          ? join(GROOT, pattern.slice(1))
+          : join(fromDir, pattern);
+        const re = new RegExp(
+          `^${abs
+            .replace(/\./g, "\\.")
+            .replace(/\*\*/g, "\uE000")
+            .replace(/\*/g, "[^/]*")
+            .replace(/\uE000/g, ".*")}$`,
+        );
+        for (const file of Object.keys(GFILES)) {
+          if (re.test(file)) {
+            hits.add(file);
+          }
+        }
+      }
+      return [...hits];
+    },
+    async readFile(path) {
+      return GFILES[path] ?? null;
+    },
+    async runGit() {
+      return "";
+    },
+    async exec() {
+      return { stdout: "", stderr: "", code: 0 };
+    },
+  };
+
+  const { nodes } = await crawlGraph(host, ["/g/src/main.ts"]);
+  // import.meta.glob("./views/*.vue")
+  expect(nodes).toContain("/g/src/views/Home.vue");
+  expect(nodes).toContain("/g/src/views/About.vue");
+  // import(`./widgets/${n}.vue`) — computed path expanded to ./widgets/*.vue
+  expect(nodes).toContain("/g/src/widgets/Chart.vue");
+  expect(nodes).toContain("/g/src/widgets/Table.vue");
 });
 
 test("counts lines of code", async () => {

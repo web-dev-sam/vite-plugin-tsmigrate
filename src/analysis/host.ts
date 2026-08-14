@@ -9,8 +9,25 @@
 export interface AnalysisHost {
   /** Absolute project root (the user's app). */
   root: string;
+  /**
+   * Entry modules declared in the build config — Vite's
+   * `build.rollupOptions.input`, as set by e.g. `laravel-vite-plugin`,
+   * library builds, or multi-page setups. Absolute paths. Empty when the app
+   * relies on a root `index.html` instead. Used as crawl roots so apps that
+   * serve their module script from outside a static `index.html` (Laravel's
+   * `@vite()` in a Blade template, etc.) still produce a graph.
+   */
+  configuredEntries(): string[];
   /** Resolve an import specifier like Vite would. Null when unresolvable. */
   resolve(specifier: string, importer: string): Promise<string | null>;
+  /**
+   * Expand glob `patterns` to absolute file paths, excluding `node_modules`.
+   * Relative patterns resolve against `fromDir`; a leading `/` is root-relative
+   * (Vite convention). Lets the crawl follow `import.meta.glob(...)` and
+   * dynamic imports with computed paths (``import(`./views/${n}.vue`)``) — the
+   * modules a single specifier can't name. Empty on no match.
+   */
+  glob(patterns: string[], fromDir: string): Promise<string[]>;
   /** Read a file, null when missing/unreadable. */
   readFile(path: string): Promise<string | null>;
   /** Run git in the project root, resolving with stdout. Rejects on failure. */

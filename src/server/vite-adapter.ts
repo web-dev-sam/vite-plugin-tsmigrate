@@ -2,6 +2,7 @@ import { execFile } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
+import { glob as tinyGlob } from "tinyglobby";
 import type { ViteDevServer } from "vite";
 import type { AnalysisEngine } from "../analysis/engine.ts";
 import type { AnalysisHost } from "../analysis/host.ts";
@@ -18,9 +19,46 @@ export function createAnalysisHost(server: ViteDevServer): AnalysisHost {
   const container = server.environments.client.pluginContainer;
   return {
     root,
+    configuredEntries() {
+      // Vite's resolved `build.rollupOptions.input` holds the entry modules a
+      // plugin declared (laravel-vite-plugin, library/MPA builds). Normalise
+      // the string | string[] | Record<string,string> shape to absolute paths;
+      // non-JS entries (e.g. CSS) are filtered downstream by extension.
+      const input = server.config.build?.rollupOptions?.input;
+      const specs =
+        input == null
+          ? []
+          : typeof input === "string"
+            ? [input]
+            : Array.isArray(input)
+              ? input
+              : Object.values(input);
+      return specs.map((spec) => (isAbsolute(spec) ? spec : resolve(root, spec)));
+    },
     async resolve(specifier, importer) {
       const resolved = await container.resolveId(specifier, importer);
       return resolved?.id ?? null;
+    },
+    async glob(patterns, fromDir) {
+      // Relative patterns are anchored at the importing module's dir; a leading
+      // `/` is project-root-relative (Vite's convention for import.meta.glob).
+      const relative_ = patterns.filter((p) => !p.startsWith("/"));
+      const rooted = patterns.filter((p) => p.startsWith("/")).map((p) => p.slice(1));
+      const out = new Set<string>();
+      const run = async (pats: string[], cwd: string) => {
+        if (pats.length === 0) return;
+        for (const hit of await tinyGlob(pats, {
+          cwd,
+          absolute: true,
+          onlyFiles: true,
+          ignore: ["**/node_modules/**"],
+        })) {
+          out.add(hit);
+        }
+      };
+      await run(relative_, fromDir);
+      await run(rooted, root);
+      return [...out];
     },
     async readFile(path) {
       try {
