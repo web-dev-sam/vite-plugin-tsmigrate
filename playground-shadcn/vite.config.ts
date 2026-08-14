@@ -27,6 +27,9 @@ export default defineConfig({
   optimizeDeps: { noDiscovery: true },
   plugins: [
     tsmigrate({
+      // Dev harness (scripts/dev.mjs) pins the tool server's port so the tool
+      // UI's proxy always targets this exact backend; falls back to the default.
+      toolPort: Number(process.env.TSMIGRATE_PORT) || undefined,
       greeting: "Analyzing shadcn-vue (Vue 3 + TypeScript component registry)",
       // shadcn-vue's registry is a Nuxt app whose type-check relies on Nuxt's
       // generated tsconfig + auto-imports; a standalone vue-tsc needs that

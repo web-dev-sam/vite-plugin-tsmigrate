@@ -3,7 +3,46 @@
   "tasks": [
     {
       "label": "Dev",
-      "detail": "Playground dev server (vite dev)",
+      "detail": "One coordinated dev loop (scripts/dev.mjs): runs the vben playground (plugin API + prebuilt tool on :7357) and the tool-UI HMR server (:7358) together on matching ports. Edit tool/** for live HMR; edit src/** and the app auto-restarts. Open the tool URL it prints.",
+      "type": "shell",
+      "command": "node scripts/dev.mjs",
+      "options": { "cwd": "${workspaceFolder}" },
+      "isBackground": true,
+      "problemMatcher": [],
+      "icon": { "id": "rocket", "color": "terminal.ansiMagenta" },
+      "presentation": { "panel": "dedicated", "reveal": "always" }
+    },
+    {
+      "label": "Dev (Vuetify)",
+      "detail": "Coordinated dev loop against the Vuetify playground (tool-UI HMR + playground). Open the tool URL it prints.",
+      "type": "shell",
+      "command": "node scripts/dev.mjs",
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "env": { "TSMIGRATE_PLAYGROUND": "playground-vuetify" }
+      },
+      "isBackground": true,
+      "problemMatcher": [],
+      "icon": { "id": "rocket", "color": "terminal.ansiMagenta" },
+      "presentation": { "panel": "dedicated", "reveal": "always" }
+    },
+    {
+      "label": "Dev (shadcn-vue)",
+      "detail": "Coordinated dev loop against the shadcn-vue playground (tool-UI HMR + playground). Open the tool URL it prints.",
+      "type": "shell",
+      "command": "node scripts/dev.mjs",
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "env": { "TSMIGRATE_PLAYGROUND": "playground-shadcn" }
+      },
+      "isBackground": true,
+      "problemMatcher": [],
+      "icon": { "id": "rocket", "color": "terminal.ansiMagenta" },
+      "presentation": { "panel": "dedicated", "reveal": "always" }
+    },
+    {
+      "label": "Playground only (no HMR)",
+      "detail": "Run just the vben playground (no tool-UI HMR): the plugin serves the prebuilt dist/client tool on :7357. Pair with 'Build Tool UI' to verify the shipped bundle.",
       "type": "shell",
       "command": "vp dev",
       "options": { "cwd": "${workspaceFolder}/playground" },
@@ -13,50 +52,8 @@
       "presentation": { "panel": "dedicated", "reveal": "always" }
     },
     {
-      "label": "Dev (Vuetify)",
-      "detail": "Vuetify playground dev server (vite dev) — open the tsmigrate URL it prints",
-      "type": "shell",
-      "command": "vp dev",
-      "options": { "cwd": "${workspaceFolder}/playground-vuetify" },
-      "isBackground": true,
-      "problemMatcher": [],
-      "icon": { "id": "play", "color": "terminal.ansiGreen" },
-      "presentation": { "panel": "dedicated", "reveal": "always" }
-    },
-    {
-      "label": "Dev (shadcn-vue)",
-      "detail": "shadcn-vue playground dev server (vite dev) — open the tsmigrate URL it prints",
-      "type": "shell",
-      "command": "vp dev",
-      "options": { "cwd": "${workspaceFolder}/playground-shadcn" },
-      "isBackground": true,
-      "problemMatcher": [],
-      "icon": { "id": "play", "color": "terminal.ansiGreen" },
-      "presentation": { "panel": "dedicated", "reveal": "always" }
-    },
-    {
-      "label": "Tool UI (HMR)",
-      "detail": "Tool UI dev server with hot reload. Open http://localhost:7358 — it proxies /api to a running playground's plugin server on :7357, so start a 'Dev' task first (or use 'Dev + Tool UI').",
-      "type": "shell",
-      "command": "vp exec vite tool --port 7358",
-      "options": { "cwd": "${workspaceFolder}" },
-      "isBackground": true,
-      "problemMatcher": [],
-      "icon": { "id": "flame", "color": "terminal.ansiMagenta" },
-      "presentation": { "panel": "dedicated", "reveal": "always" }
-    },
-    {
-      "label": "Dev + Tool UI (HMR)",
-      "detail": "One click: runs the Vben playground (serves /api on :7357) AND the Tool UI HMR server together. Edit tool/src/* and see it live at http://localhost:7358.",
-      "dependsOn": ["Dev", "Tool UI (HMR)"],
-      "dependsOrder": "parallel",
-      "problemMatcher": [],
-      "icon": { "id": "rocket", "color": "terminal.ansiMagenta" },
-      "presentation": { "reveal": "always" }
-    },
-    {
       "label": "Build Tool UI",
-      "detail": "Rebuild the shipped tool bundle into dist/client. Use for the no-HMR loop: run this, then refresh the plugin's tool page on :7357.",
+      "detail": "Rebuild the shipped tool bundle into dist/client. Use to verify the no-HMR path: run this, then refresh the plugin's prebuilt tool page on :7357.",
       "type": "shell",
       "command": "vp exec vite build tool",
       "options": { "cwd": "${workspaceFolder}" },
