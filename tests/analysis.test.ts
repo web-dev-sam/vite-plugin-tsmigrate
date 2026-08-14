@@ -488,6 +488,35 @@ test("hotspots surface the biggest score-draggers first, not the biggest files",
   expect(h.indexOf(hub)).toBeLessThan(h.indexOf(big));
 });
 
+test("per-node driver contributions are populated and normalised to the top contributor", () => {
+  const g = graphOf(
+    [
+      ["/r/i1.ts", "/r/hub.ts"],
+      ["/r/i2.ts", "/r/hub.ts"],
+      ["/r/i3.ts", "/r/hub.ts"],
+    ],
+    facts({
+      "/r/hub.ts": { loc: 10, te: 1 },
+      "/r/i1.ts": { loc: 10 },
+      "/r/i2.ts": { loc: 10 },
+      "/r/i3.ts": { loc: 10 },
+      "/r/big.ts": { loc: 1000 },
+    }),
+  );
+  const c = scoreMaintainability(g).contributions;
+  // The red, widely-imported hub is the only (thus top) types contributor → 1.
+  expect(c["/r/hub.ts"]!.types).toBe(1);
+  // The large, clean, isolated island has zero overhead → absent from the map.
+  expect(c["/r/big.ts"]).toBeUndefined();
+  // Every intensity is a normalised [0,1] fraction.
+  for (const v of Object.values(c)) {
+    for (const x of [v.comprehension, v.blast, v.types]) {
+      expect(x).toBeGreaterThanOrEqual(0);
+      expect(x).toBeLessThanOrEqual(1);
+    }
+  }
+});
+
 test("maintainability scores a clean tree far above a tangled ball", () => {
   // Shallow tree: entry imports leaves; leaves import nothing. No cycles.
   const tree = graphOf(

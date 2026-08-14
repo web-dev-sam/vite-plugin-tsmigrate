@@ -1,5 +1,10 @@
 import * as d3 from "d3";
-import type { ComponentNode, Graph } from "../../../src/shared/types.ts";
+import type {
+  ComponentNode,
+  Graph,
+  MaintainabilityContributions,
+  MaintainabilityDriver,
+} from "../../../src/shared/types.ts";
 
 /**
  * Framework-agnostic d3 renderer for the radial typing-progress graph — a
@@ -21,6 +26,15 @@ const GREEN = "#3fb950";
 const RED = "#f85149";
 // Neutral fill for files still being type-checked — never red-on-unknown.
 const NEUTRAL = "#8b949e";
+// Driver-highlight ring colours (mirror the panel's coloured dots).
+const DRIVER_COLOR: Record<MaintainabilityDriver, string> = {
+  comprehension: "#58a6ff",
+  blast: "#a371f7",
+  types: RED,
+};
+// Ring radius past the node edge (user units) and the min intensity worth drawing.
+const HALO_OFFSET = 2.5;
+const HALO_EPS = 0.03;
 
 const TAU = 2 * Math.PI;
 const RING = 150;
@@ -121,6 +135,11 @@ export interface GraphController {
   toggleDepth(height: number): void;
   /** Isolate a node's supertree (its dependents) — the panel's hotspot-row click. */
   focusDependents(id: string): void;
+  /** Highlight a driver's per-node contribution as coloured rings (null clears). */
+  setDriverHighlight(
+    driver: MaintainabilityDriver | null,
+    contributions: MaintainabilityContributions | null,
+  ): void;
   /** Tear down the simulation, listeners and DOM. */
   destroy(): void;
 }
@@ -180,6 +199,7 @@ export function initGraph(opts: InitOptions): GraphController {
   const root = svg.append("g");
   const ringG = root.append("g");
   const linkG = root.append("g");
+  const haloG = root.append("g");
   const nodeG = root.append("g");
   const labelG = root.append("g");
 
@@ -218,6 +238,11 @@ export function initGraph(opts: InitOptions): GraphController {
   let out = new Map<string, Set<string>>();
   let inn = new Map<string, Set<string>>();
   let nodeR: (n: RNode) => number = () => 6;
+  // Driver-highlight rings: the selected driver and the per-node contribution
+  // map that sets each ring's colour + opacity (null = no highlight).
+  let haloSel: d3.Selection<SVGCircleElement, RNode, SVGGElement, unknown> | null = null;
+  let driver: MaintainabilityDriver | null = null;
+  let contrib: MaintainabilityContributions | null = null;
 
   // Click-to-isolate: ids reachable from the focused node. `dir` picks the walk
   // — "down" = its import subtree (what it uses), "up" = its supertree (what
@@ -434,6 +459,31 @@ export function initGraph(opts: InitOptions): GraphController {
     labelSel.style("display", (d) => (isHidden(d) ? "none" : null));
     renderLinks();
     applySearch();
+    renderHalos();
+  }
+
+  // Driver-highlight rings: a coloured disc behind each node, sized a touch
+  // larger than the node so a thin ring shows around it, at opacity = the
+  // node's normalised contribution to the selected driver. One circle per node
+  // (far cheaper than per-node drop-shadow filters); hidden entirely when no
+  // driver is selected or the contribution is negligible.
+  function renderHalos(): void {
+    if (!haloSel || !nodeSel) return;
+    if (driver === null || contrib === null) {
+      haloSel.attr("display", "none");
+      return;
+    }
+    const key = driver;
+    const data = contrib;
+    const col = DRIVER_COLOR[key];
+    const intensity = (d: RNode) => data[d.id]?.[key] ?? 0;
+    haloSel
+      .attr("display", (d) => (intensity(d) >= HALO_EPS && !isHidden(d) ? null : "none"))
+      .attr("cx", (d) => d.x!)
+      .attr("cy", (d) => d.y!)
+      .attr("r", (d) => nodeR(d) + HALO_OFFSET)
+      .attr("fill", col)
+      .attr("fill-opacity", (d) => intensity(d));
   }
 
   function applySearch(): void {
@@ -497,6 +547,7 @@ export function initGraph(opts: InitOptions): GraphController {
     linkG.selectAll("*").remove();
     nodeG.selectAll("*").remove();
     labelG.selectAll("*").remove();
+    haloG.selectAll("*").remove();
 
     ringG
       .selectAll<SVGCircleElement, number>("circle")
@@ -537,6 +588,13 @@ export function initGraph(opts: InitOptions): GraphController {
       .attr("fill", color)
       .call(drag);
 
+    haloSel = haloG
+      .selectAll<SVGCircleElement, RNode>("circle")
+      .data(nodes)
+      .join("circle")
+      .attr("class", "halo")
+      .attr("display", "none");
+
     labelSel = labelG
       .selectAll<SVGTextElement, RNode>("text")
       .data(nodes)
@@ -555,6 +613,7 @@ export function initGraph(opts: InitOptions): GraphController {
         .attr("y2", (d) => (d.target as RNode).y!);
       nodeSel!.attr("cx", (d) => d.x!).attr("cy", (d) => d.y!);
       labelSel!.attr("x", (d) => d.x!).attr("y", (d) => d.y!);
+      if (driver !== null) haloSel!.attr("cx", (d) => d.x!).attr("cy", (d) => d.y!);
     };
 
     sim = d3
@@ -678,6 +737,15 @@ export function initGraph(opts: InitOptions): GraphController {
     refresh();
   }
 
+  function setDriverHighlight(
+    d: MaintainabilityDriver | null,
+    contributions: MaintainabilityContributions | null,
+  ): void {
+    driver = d;
+    contrib = contributions;
+    renderHalos();
+  }
+
   // Toggle a node-focus isolate; `refresh()` reapplies visibility + link overlay.
   function isolate(id: string, dir: "down" | "up"): void {
     const already = focus !== null && focus.root === id && focus.dir === dir;
@@ -701,5 +769,12 @@ export function initGraph(opts: InitOptions): GraphController {
     tooltip.style.opacity = "0";
   }
 
-  return { setGraph, setControls, toggleDepth, focusDependents, destroy };
+  return {
+    setGraph,
+    setControls,
+    toggleDepth,
+    focusDependents,
+    setDriverHighlight,
+    destroy,
+  };
 }

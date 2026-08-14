@@ -84,6 +84,20 @@ export interface MaintainabilityHotspot {
   /** This file's modelled change-cost, in LoC-equivalent units. */
   cost: number;
 }
+
+/** The three overhead drivers (excess coupling / change blast / type errors). */
+export type MaintainabilityDriver = "comprehension" | "blast" | "types";
+
+/**
+ * Per-node contribution to each driver, normalised to [0,1] by the top
+ * contributor in that driver. Keyed by node id (absolute module id); a file
+ * absent from the map contributes zero to every driver. Powers the graph's
+ * driver-highlight rings.
+ */
+export type MaintainabilityContributions = Record<
+  string,
+  { comprehension: number; blast: number; types: number }
+>;
 /**
  * Whole-graph maintainability score: the modelled cost of a safe change,
  * normalised against the "read every file once" floor (higher = cheaper to
@@ -112,6 +126,8 @@ export interface Maintainability {
   typeHealth: number | null;
   /** Biggest score-draggers first (highest overhead above their own floor), capped — where to look to raise the score. */
   hotspots: MaintainabilityHotspot[];
+  /** Per-node normalised contribution to each driver, for the driver-highlight rings. */
+  contributions: MaintainabilityContributions;
 }
 
 export interface ComponentGraph {

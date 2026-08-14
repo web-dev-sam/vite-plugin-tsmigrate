@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { ref } from "vue";
-import type { Maintainability } from "../../../src/shared/types.ts";
+import type { Maintainability, MaintainabilityDriver } from "../../../src/shared/types.ts";
 import type { DepthRow, Mode, Readouts } from "../graph/render.ts";
 import Checkbox from "../ui/Checkbox.vue";
 import Dot from "../ui/Dot.vue";
@@ -27,10 +27,13 @@ defineProps<{
   ripgrep: boolean;
   /** Whole-graph maintainability score (over the full module graph). */
   maintainability: Maintainability | null;
+  /** The driver whose per-node contribution the graph is highlighting (null = none). */
+  activeDriver: MaintainabilityDriver | null;
 }>();
 const emit = defineEmits<{
   depthClick: [height: number];
   focusNode: [id: string];
+  driverClick: [driver: MaintainabilityDriver];
 }>();
 
 const mode = defineModel<Mode>("mode", { required: true });
@@ -156,7 +159,11 @@ const scoreOpen = ref(true);
           <Tooltip
             content="Files that import too many other modules. A handful of imports is fine; this only counts files that pull in far more than usual — and importing stable things like icons barely counts."
           >
-            <StatRow>
+            <StatRow
+              class="-mx-1 cursor-pointer rounded px-1 transition-colors hover:bg-border/40"
+              :class="{ 'bg-border/60': activeDriver === 'comprehension' }"
+              @click="emit('driverClick', 'comprehension')"
+            >
               <template #label>
                 <span class="inline-block size-2 rounded-full bg-accent" />excess coupling
               </template>
@@ -166,7 +173,11 @@ const scoreOpen = ref(true);
           <Tooltip
             content="Ripple risk: files that change often and that much of the codebase depends on. Change one and you have to re-check everything downstream. Files that rarely change don't count, no matter how many import them."
           >
-            <StatRow>
+            <StatRow
+              class="-mx-1 cursor-pointer rounded px-1 transition-colors hover:bg-border/40"
+              :class="{ 'bg-border/60': activeDriver === 'blast' }"
+              @click="emit('driverClick', 'blast')"
+            >
               <template #label>
                 <span class="inline-block size-2 rounded-full bg-purple" />change blast
               </template>
@@ -177,7 +188,11 @@ const scoreOpen = ref(true);
             v-if="maintainability.typeHealth !== null"
             content="Files that have type errors, counted more heavily the more widely they're imported — a bad type in a core file hurts far more than one in a rarely-used leaf."
           >
-            <StatRow>
+            <StatRow
+              class="-mx-1 cursor-pointer rounded px-1 transition-colors hover:bg-border/40"
+              :class="{ 'bg-border/60': activeDriver === 'types' }"
+              @click="emit('driverClick', 'types')"
+            >
               <template #label>
                 <span class="inline-block size-2 rounded-full bg-red" />type errors
               </template>

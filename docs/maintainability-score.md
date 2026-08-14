@@ -125,6 +125,9 @@ the runaway of the naive model.)
 - **drivers** — how the overhead above the floor splits into `comprehension`
   (excess fan-out), `blast` (structural ripple), and `types` (the direct cost
   of red files); the three add to 1. This says _why_ the score is what it is.
+  Clicking a driver row highlights each node in the graph with a ring in that
+  driver's colour, its opacity set by the file's contribution to that driver
+  (`contributions` on the wire, normalised to `[0,1]` by the top contributor).
 - **in cycles** — the fraction of LoC trapped in import cycles.
 - **typed** — LoC-weighted typed fraction (omitted when the type pass is off).
 - **hotspots** — the files dragging the score down most (highest overhead above their own floor), each with its fan-out,

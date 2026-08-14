@@ -82,6 +82,11 @@
   filter: drop-shadow(0 0 6px rgba(255, 255, 255, 0.55));
 }
 
+/* Driver-highlight rings behind nodes — fill/opacity set imperatively by render.ts. */
+.halo {
+  pointer-events: none;
+}
+
 .link.dim {
   stroke-opacity: 0.04;
 }

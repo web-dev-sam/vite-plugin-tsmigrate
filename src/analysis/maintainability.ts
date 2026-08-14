@@ -1,4 +1,9 @@
-import type { Graph, Maintainability, MaintainabilityHotspot } from "../shared/types.ts";
+import type {
+  Graph,
+  Maintainability,
+  MaintainabilityContributions,
+  MaintainabilityHotspot,
+} from "../shared/types.ts";
 
 /**
  * Pure maintainability scoring over the `full` module graph. No IO, no `vite`.
@@ -75,6 +80,7 @@ export function scoreMaintainability(graph: Graph): Maintainability {
       edges: edges.length,
       typeHealth: typeAvailable ? typedFraction(nodes, totalLoc) : null,
       hotspots: [],
+      contributions: {},
     };
   }
 
@@ -170,6 +176,12 @@ export function scoreMaintainability(graph: Graph): Maintainability {
   let overheadTypes = 0;
   let cycleLoc = 0;
   const hotspots: MaintainabilityHotspot[] = [];
+  const contribC = new Float64Array(n);
+  const contribB = new Float64Array(n);
+  const contribT = new Float64Array(n);
+  let maxC = 0;
+  let maxB = 0;
+  let maxT = 0;
 
   for (let i = 0; i < n; i++) {
     const li = loc(i);
@@ -198,6 +210,12 @@ export function scoreMaintainability(graph: Graph): Maintainability {
     overheadComprehension += li * comprehend;
     overheadBlast += li * blast;
     overheadTypes += li * types;
+    contribC[i] = li * comprehend;
+    contribB[i] = li * blast;
+    contribT[i] = li * types;
+    if (contribC[i]! > maxC) maxC = contribC[i]!;
+    if (contribB[i]! > maxB) maxB = contribB[i]!;
+    if (contribT[i]! > maxT) maxT = contribT[i]!;
     if (inCycle(i)) {
       cycleLoc += li;
     }
@@ -231,6 +249,20 @@ export function scoreMaintainability(graph: Graph): Maintainability {
   // hotspot, so sort by overhead, not absolute cost.
   hotspots.sort((a, b) => b.cost - b.loc - (a.cost - a.loc));
 
+  // Per-node contribution to each driver, normalised to [0,1] by the top
+  // contributor in that driver — the intensity of the graph's driver-highlight
+  // rings. Files at their own floor (zero overhead) are omitted.
+  const norm = (v: number, max: number) => (max > 0 ? Math.round((v / max) * 1000) / 1000 : 0);
+  const contributions: MaintainabilityContributions = {};
+  for (let i = 0; i < n; i++) {
+    const c = norm(contribC[i]!, maxC);
+    const b = norm(contribB[i]!, maxB);
+    const t = norm(contribT[i]!, maxT);
+    if (c > 0 || b > 0 || t > 0) {
+      contributions[nodes[i]!.id] = { comprehension: c, blast: b, types: t };
+    }
+  }
+
   return {
     score: Math.round((100 * totalLoc) / costLoc),
     floorLoc: totalLoc,
@@ -241,6 +273,7 @@ export function scoreMaintainability(graph: Graph): Maintainability {
     edges: edges.length,
     typeHealth: typeAvailable ? typedFraction(nodes, totalLoc) : null,
     hotspots: hotspots.slice(0, MAX_HOTSPOTS),
+    contributions,
   };
 }
 

@@ -1,6 +1,10 @@
 <script setup lang="ts">
 import { onMounted, onUnmounted, ref, watch } from "vue";
-import type { Graph } from "../../../src/shared/types.ts";
+import type {
+  Graph,
+  MaintainabilityContributions,
+  MaintainabilityDriver,
+} from "../../../src/shared/types.ts";
 import { type Controls, type GraphController, type Readouts, initGraph } from "../graph/render.ts";
 
 /**
@@ -8,7 +12,12 @@ import { type Controls, type GraphController, type Readouts, initGraph } from ".
  * full-viewport `<svg>` and its hover tooltip; drives the renderer from props
  * and surfaces the renderer's computed readouts back up as an event.
  */
-const props = defineProps<{ graph: Graph; controls: Controls }>();
+const props = defineProps<{
+  graph: Graph;
+  controls: Controls;
+  driver: MaintainabilityDriver | null;
+  contributions: MaintainabilityContributions | null;
+}>();
 const emit = defineEmits<{
   readouts: [Readouts];
   openSource: [{ id: string; file: string }];
@@ -29,6 +38,7 @@ onMounted(() => {
   // Controls first so the initial paint honours the live colour mode / filters.
   controller.setControls(props.controls);
   controller.setGraph(props.graph);
+  controller.setDriverHighlight(props.driver, props.contributions);
 });
 
 // A new graph reference means a vue↔full swap or fresh server data.
@@ -40,6 +50,10 @@ watch(
   () => props.controls,
   (c) => controller?.setControls(c),
   { deep: true },
+);
+watch(
+  () => [props.driver, props.contributions],
+  () => controller?.setDriverHighlight(props.driver, props.contributions),
 );
 
 onUnmounted(() => controller?.destroy());

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, reactive, ref, watch } from "vue";
-import type { ComponentGraph, Diagnostics } from "../../src/shared/types.ts";
+import type { ComponentGraph, Diagnostics, MaintainabilityDriver } from "../../src/shared/types.ts";
 import { fetchDiagnostics, fetchGraph, fetchSearch } from "./api/client.ts";
 import ControlPanel from "./components/ControlPanel.vue";
 import GraphChart from "./components/GraphChart.vue";
@@ -71,6 +71,13 @@ const chart = ref<InstanceType<typeof GraphChart> | null>(null);
 // The node whose source the modal is showing (null = closed). Set on a node
 // double-click from the chart; the modal fetches + highlights by id.
 const source = ref<{ id: string; file: string } | null>(null);
+
+// The driver whose per-node contribution the graph highlights as rings
+// (null = off). Toggled by clicking a driver row in the panel.
+const activeDriver = ref<MaintainabilityDriver | null>(null);
+function toggleDriver(d: MaintainabilityDriver) {
+  activeDriver.value = activeDriver.value === d ? null : d;
+}
 
 let timer: ReturnType<typeof setTimeout> | undefined;
 let stopped = false;
@@ -156,6 +163,8 @@ onUnmounted(() => {
     ref="chart"
     :graph="activeGraph"
     :controls="controls"
+    :driver="activeDriver"
+    :contributions="graph?.maintainability.contributions ?? null"
     @readouts="readouts = $event"
     @open-source="source = $event"
   />
@@ -176,8 +185,10 @@ onUnmounted(() => {
     :header="header"
     :ripgrep="ripgrep"
     :maintainability="graph?.maintainability ?? null"
+    :active-driver="activeDriver"
     @depth-click="chart?.toggleDepth($event)"
     @focus-node="chart?.focusDependents($event)"
+    @driver-click="toggleDriver($event)"
   />
 
   <p
