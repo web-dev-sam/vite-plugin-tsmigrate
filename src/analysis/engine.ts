@@ -9,6 +9,7 @@ import { FactStore } from "./cache.ts";
 import { type CrawlFile, crawlGraph, findEntry } from "./graph.ts";
 import type { AnalysisHost } from "./host.ts";
 import { type FileFacts, makeGraph } from "./topology.ts";
+import { scoreMaintainability } from "./maintainability.ts";
 import { runTypeCheck } from "./typecheck.ts";
 
 const QUEUE_CONCURRENCY = 4;
@@ -140,6 +141,7 @@ export class AnalysisEngine {
       root: this.host.root,
       vue,
       full,
+      maintainability: scoreMaintainability(full),
     };
   }
 

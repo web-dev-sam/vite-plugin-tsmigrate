@@ -1,4 +1,6 @@
 <script setup lang="ts">
+import { ref } from "vue";
+import type { Maintainability } from "../../../src/shared/types.ts";
 import type { DepthRow, Mode, Readouts } from "../graph/render.ts";
 import Checkbox from "../ui/Checkbox.vue";
 import Dot from "../ui/Dot.vue";
@@ -23,8 +25,13 @@ defineProps<{
   header: { complete: boolean; appUrl: string | null };
   /** `false` disables the content-search bar (ripgrep binary not found). */
   ripgrep: boolean;
+  /** Whole-graph maintainability score (over the full module graph). */
+  maintainability: Maintainability | null;
 }>();
-const emit = defineEmits<{ depthClick: [height: number] }>();
+const emit = defineEmits<{
+  depthClick: [height: number];
+  openSource: [node: { id: string; file: string }];
+}>();
 
 const mode = defineModel<Mode>("mode", { required: true });
 const onlyRed = defineModel<boolean>("onlyRed", { required: true });
@@ -57,6 +64,19 @@ function depthTitle(d: DepthRow): string {
     `(${d.green}/${d.total} files). Click to isolate this depth.`
   );
 }
+
+const pct = (n: number) => (n * 100).toFixed(0);
+
+// Score grade: green from 80, amber from 50, else red — mirrors the node palette.
+function scoreTone(score: number): string {
+  if (score >= 80) {
+    return "text-green";
+  }
+  return score >= 50 ? "text-warn" : "text-red";
+}
+
+// Score card collapse — open by default; the number stays visible when closed.
+const scoreOpen = ref(true);
 </script>
 
 <template>
@@ -78,7 +98,140 @@ function depthTitle(d: DepthRow): string {
       </p>
     </header>
 
-    <Section flush>
+    <Section v-if="maintainability" flush>
+      <div class="flex items-center justify-between">
+        <button
+          type="button"
+          class="flex flex-1 items-center gap-1.5 text-left text-xs font-medium tracking-wide text-muted uppercase transition-colors hover:text-fg"
+          :aria-expanded="scoreOpen"
+          @click="scoreOpen = !scoreOpen"
+        >
+          <span
+            class="inline-block text-[0.65rem] transition-transform"
+            :class="scoreOpen ? 'rotate-90' : ''"
+            >▶</span
+          >
+          maintainability
+        </button>
+        <Tooltip
+          content="How maintainable the codebase is, from 0 to 100. 100 means every change stays small and local; lower means changes tend to ripple across many files. Measured over the full module graph — see docs/maintainability-score.md."
+        >
+          <span
+            class="text-2xl font-semibold tabular-nums"
+            :class="scoreTone(maintainability.score)"
+          >
+            {{ maintainability.score }}<span class="text-sm font-normal text-muted">/100</span>
+          </span>
+        </Tooltip>
+      </div>
+
+      <div v-show="scoreOpen">
+        <!-- Overhead drivers: excess coupling | change blast | type errors. -->
+        <Tooltip
+          content="What makes a change cost more than just reading the file: too many imports, ripple from files that lots of code depends on, and type errors. The bar shows how much each one adds."
+        >
+          <div class="mt-2.5 flex h-1.5 overflow-hidden rounded-full bg-border/60">
+            <div
+              class="bg-accent"
+              :style="{ width: pct(maintainability.drivers.comprehension) + '%' }"
+            />
+            <div class="bg-purple" :style="{ width: pct(maintainability.drivers.blast) + '%' }" />
+            <div class="bg-red" :style="{ width: pct(maintainability.drivers.types) + '%' }" />
+          </div>
+        </Tooltip>
+
+        <div class="mt-3 space-y-1.5">
+          <Tooltip
+            content="Files that import too many other modules. A handful of imports is fine; this only counts files that pull in far more than usual — and importing stable things like icons barely counts."
+          >
+            <StatRow>
+              <template #label>
+                <span class="inline-block size-2 rounded-full bg-accent" />excess coupling
+              </template>
+              {{ pct(maintainability.drivers.comprehension) }}%
+            </StatRow>
+          </Tooltip>
+          <Tooltip
+            content="Ripple risk: files that change often and that much of the codebase depends on. Change one and you have to re-check everything downstream. Files that rarely change don't count, no matter how many import them."
+          >
+            <StatRow>
+              <template #label>
+                <span class="inline-block size-2 rounded-full bg-purple" />change blast
+              </template>
+              {{ pct(maintainability.drivers.blast) }}%
+            </StatRow>
+          </Tooltip>
+          <Tooltip
+            v-if="maintainability.typeHealth !== null"
+            content="Files that have type errors, counted more heavily the more widely they're imported — a bad type in a core file hurts far more than one in a rarely-used leaf."
+          >
+            <StatRow>
+              <template #label>
+                <span class="inline-block size-2 rounded-full bg-red" />type errors
+              </template>
+              {{ pct(maintainability.drivers.types) }}%
+            </StatRow>
+          </Tooltip>
+          <div
+            v-if="maintainability.cycleLoc > 0 || maintainability.typeHealth !== null"
+            class="border-t border-border/60"
+          />
+          <Tooltip
+            v-if="maintainability.cycleLoc > 0"
+            content="Code stuck in import cycles: files that import each other in a loop, so you can't read, test, or change one on its own."
+          >
+            <StatRow>
+              <template #label><span class="text-red">↻</span>in cycles</template>
+              {{ pct(maintainability.cycleLoc) }}% LoC
+            </StatRow>
+          </Tooltip>
+          <Tooltip
+            v-if="maintainability.typeHealth !== null"
+            content="How much of the codebase, by lines of code, is free of type errors — the migration's headline progress and the biggest lever on the score."
+          >
+            <StatRow>
+              <template #label><Dot tone="green" />typed</template>
+              {{ (maintainability.typeHealth * 100).toFixed(1) }}% LoC
+            </StatRow>
+          </Tooltip>
+        </div>
+
+        <!-- Highest-cost files: click a row to open its source. -->
+        <div v-if="maintainability.hotspots.length" class="mt-3">
+          <div
+            class="mb-1 flex items-center justify-between px-2 text-xs font-medium tracking-wide text-muted uppercase"
+          >
+            <span>hotspots</span>
+            <Tooltip
+              content="Blast radius: how much of the codebase depends on this file, directly or indirectly. 40% means a change here could ripple to about 40% of all the code."
+            >
+              <span>blast radius</span>
+            </Tooltip>
+          </div>
+          <table class="w-full border-collapse text-xs">
+            <tbody>
+              <Tooltip
+                v-for="h in maintainability.hotspots.slice(0, 6)"
+                :key="h.id"
+                as="tr"
+                :content="`${h.file} · ${h.loc} LoC · imports ${h.fanOut} · imported by ${h.fanIn} · instability ${h.instability.toFixed(2)} · blast radius ${pct(h.blastRadius)}% of the codebase${h.inCycle ? ' · in a cycle' : ''}. Click to open source.`"
+                class="cursor-pointer transition-colors hover:[&>td]:text-fg"
+                @click="emit('openSource', { id: h.id, file: h.file })"
+              >
+                <td class="max-w-[240px] truncate py-0.5 pl-2 first:rounded-l">
+                  <span v-if="h.inCycle" class="text-red">↻ </span>{{ h.file }}
+                </td>
+                <td class="py-0.5 pr-2 text-right tabular-nums text-muted last:rounded-r">
+                  {{ pct(h.blastRadius) }}%
+                </td>
+              </Tooltip>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </Section>
+
+    <Section>
       <!-- LoC-weighted typing progress of the shown set. -->
       <Tooltip
         content="LoC-weighted typing progress of the shown set: green lines of code ÷ total lines of code."

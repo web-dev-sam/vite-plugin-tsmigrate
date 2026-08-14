@@ -73,7 +73,10 @@ test("analyses the playground app and serves the component graph", async () => {
   // ANSI codes that split "localhost:<port>". Strip them so both the match and
   // the extracted URL are valid regardless of the runner's colour support.
   const ansi = new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, "g");
-  const match = messages.join("\n").replace(ansi, "").match(/tsmigrate.*?(http:\/\/localhost:(\d+)\/)/);
+  const match = messages
+    .join("\n")
+    .replace(ansi, "")
+    .match(/tsmigrate.*?(http:\/\/localhost:(\d+)\/)/);
   expect(match).not.toBeNull();
   const toolUrl = match![1];
 

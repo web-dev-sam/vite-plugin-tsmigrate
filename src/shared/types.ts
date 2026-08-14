@@ -29,7 +29,7 @@ export interface ComponentNode {
   group: string;
   /** Component (`.vue`) vs plain module (`.ts`). */
   kind: "vue" | "ts";
-  /** Total lines in the file (null until analyzed). */
+  /** Maintainable source lines — excludes `<style>`/`<svg>` blocks (null until analyzed). */
   loc: number | null;
   /** Longest import path from this node down to a leaf, within its graph. */
   height: number;
@@ -63,6 +63,57 @@ export interface Graph {
   maxHeight: number;
 }
 
+/**
+ * One maintainability hotspot — a file whose modelled change-cost dominates
+ * the score. Surfaced so the number is actionable: these are where to look.
+ */
+export interface MaintainabilityHotspot {
+  id: string;
+  file: string;
+  loc: number;
+  /** Direct imports (efferent coupling, Ce). */
+  fanOut: number;
+  /** Direct importers (afferent coupling, Ca). */
+  fanIn: number;
+  /** Volatility-weighted instability `Ceʷ / (Ceʷ + Ca)` ∈ [0,1] — a change-likelihood proxy where stable imports count for less. */
+  instability: number;
+  /** Blast radius — fraction of the codebase's LoC that transitively imports this file. */
+  blastRadius: number;
+  /** True when this file sits in an import cycle (a non-trivial SCC). */
+  inCycle: boolean;
+  /** This file's modelled change-cost, in LoC-equivalent units. */
+  cost: number;
+}
+/**
+ * Whole-graph maintainability score: the modelled cost of a safe change,
+ * normalised against the "read every file once" floor (higher = cheaper to
+ * maintain). Computed over the `full` module graph. The full model — every
+ * term and its rationale — lives in `docs/maintainability-score.md`.
+ */
+export interface Maintainability {
+  /** 0..100, higher = more maintainable (`floorLoc / costLoc`). */
+  score: number;
+  /** Σ LoC — the theoretical floor: every file read once, no excess coupling, fully typed. */
+  floorLoc: number;
+  /** Modelled total change-cost in LoC-equivalent units (`>= floorLoc`). */
+  costLoc: number;
+  /**
+   * How the overhead above the floor splits, as fractions summing to 1:
+   * `comprehension` (excess volatility-weighted fan-out), `blast` (volatility × blast radius), and
+   * `types` (the direct cost of red, error-carrying files).
+   */
+  drivers: { comprehension: number; blast: number; types: number };
+  /** Fraction of LoC trapped in import cycles (SCCs with more than one member). */
+  cycleLoc: number;
+  /** Nodes / edges the score was computed over (the `full` graph). */
+  nodes: number;
+  edges: number;
+  /** LoC-weighted typed fraction, or `null` when the type-check pass is off. */
+  typeHealth: number | null;
+  /** Highest-cost files first, capped — where to look to raise the score. */
+  hotspots: MaintainabilityHotspot[];
+}
+
 export interface ComponentGraph {
   /** Monotonic server-side version; bumps on any fact or graph change. */
   version: number;
@@ -73,6 +124,8 @@ export interface ComponentGraph {
   vue: Graph;
   /** Reachable `.vue` + `.ts` modules, with raw import edges. */
   full: Graph;
+  /** Modelled maintainability of the `full` module graph. */
+  maintainability: Maintainability;
 }
 
 /** Cheap answer to `GET /api/graph?since=<version>` when nothing changed. */

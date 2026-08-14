@@ -69,6 +69,39 @@ tsmigrate({
 | `toolPort`         | `number`                 | `7357`                                         | Port for the plugin's own tool server (dev only); falls back to an ephemeral port when taken.                                                                                                          |
 | `logOnStart`       | `boolean`                | `true`                                         | Log the tool URL when the dev server starts.                                                                                                                                                           |
 
+## Maintainability score
+
+Alongside the graph the tool computes a single **maintainability score** in
+`[0, 100]` (higher is better), shown at the top of the panel and served on
+`GET /api/graph`. It models the expected cost of a _safe_ change — to touch a
+file you must understand it and its imports, re-verify everything that
+transitively imports it, and pay extra where the compiler can't back you up —
+and normalises that cost against the floor of reading every file once, fully
+typed. Per module $m$:
+
+$$\operatorname{cost}(m) = \operatorname{loc}(m)\cdot\bigl(1 + \alpha\max(0, C_e^{w}(m){-}K) + \beta\,I(m)\,r(m) + \operatorname{type}(m)\bigr)$$
+
+$$\text{score} = 100\cdot\frac{\sum_m \operatorname{loc}(m)}{\sum_m \operatorname{cost}(m)}$$
+
+where $C_e^{w}(m)=\sum_{d}I_0(d)$ is the **volatility-weighted** fan-out — each
+import counted by its target's instability, so pulling in a stable barrel like
+`@vben/icons` is nearly free while pulling in a churning module costs a full
+edge — and only weighted fan-out **above a healthy budget** $K$ costs
+comprehension (so ordinary modularity is free). $I = C_e^{w}/(C_e^{w}+C_a)$ is
+the instability (a change-likelihood proxy, so stable foundations aren't
+punished for being widely imported, and importing stable code doesn't make you
+look volatile), $r$ is the fraction of the codebase that transitively imports
+$m$ (cycles fold their whole LoC into every member), and $\operatorname{type}(m) =
+\gamma(1 + \delta\,r)$ for a file carrying type errors — so **type errors are a
+first-class term, weighted by how widely the red file is imported**. A clean,
+fully-typed, modular codebase approaches 100; the panel breaks the score into
+its drivers (excess coupling / change blast / type errors) plus the
+highest-cost hotspot files.
+
+The full model — every term, its rationale, the tunable constants, and the
+limits of what a dependency graph can measure — is documented in
+[`docs/maintainability-score.md`](./docs/maintainability-score.md).
+
 ## Development
 
 This project uses the [Vite+](https://viteplus.dev) toolchain — a single `vp`

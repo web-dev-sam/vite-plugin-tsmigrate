@@ -5,7 +5,9 @@ import { locAnalyzer } from "../src/analysis/analyzers/loc.ts";
 import { AnalysisEngine } from "../src/analysis/engine.ts";
 import { crawlGraph, findEntry } from "../src/analysis/graph.ts";
 import type { AnalysisHost } from "../src/analysis/host.ts";
+import { scoreMaintainability } from "../src/analysis/maintainability.ts";
 import { computeHeights, type FileFacts, groupOf, makeGraph } from "../src/analysis/topology.ts";
+import type { Graph } from "../src/shared/types.ts";
 import { parseTscErrors } from "../src/analysis/typecheck.ts";
 
 const ROOT = "/app";
@@ -152,6 +154,26 @@ test("counts lines of code", async () => {
   expect(loc).toBe(2);
 });
 
+test("loc counts maintainable lines — <style>/<svg> bulk does not inflate it", async () => {
+  const host = (content: string): AnalysisHost =>
+    ({ readFile: async () => content }) as unknown as AnalysisHost;
+  const analyze = (content: string) => locAnalyzer.analyze({ host: host(content), file: "/x.vue" });
+  const small = [
+    `<script setup lang="ts">`,
+    `const n = 1`,
+    `</script>`,
+    `<template><svg><path /></svg></template>`,
+    `<style>.a {}</style>`,
+  ].join("\n");
+  // Balloon the vector data and the CSS: neither should change the LoC.
+  const huge = small
+    .replace("<path />", Array.from({ length: 500 }, () => "<path />").join("\n"))
+    .replace(".a {}", Array.from({ length: 500 }, (_, i) => `.c${i} { color: red }`).join("\n"));
+  expect(await analyze(huge)).toBe(await analyze(small));
+  // What's left is just the script logic plus the (now-empty) block wrappers.
+  expect(await analyze(small)).toBeLessThan(6);
+});
+
 test("parses blame porcelain into lines per author", () => {
   expect(parseBlamePorcelain(BLAME_FIXTURE).authorLines).toEqual({
     Alice: 2,
@@ -204,6 +226,17 @@ test("engine produces a complete two-graph snapshot with all facts", async () =>
   expect(graph.full.edges).toContainEqual({ from: mainNode.id, to: appFull.id });
   expect(graph.full.edges).toContainEqual({ from: appFull.id, to: shared.id });
   expect(graph.full.edges).toContainEqual({ from: shared.id, to: deepFull.id });
+
+  // Maintainability rides the snapshot, computed over the full graph. The
+  // type-check pass is off here, so typeHealth is null (not a fake 100%).
+  const m = graph.maintainability;
+  expect(m.nodes).toBe(graph.full.nodes.length);
+  expect(m.score).toBeGreaterThanOrEqual(0);
+  expect(m.score).toBeLessThanOrEqual(100);
+  expect(m.floorLoc).toBeGreaterThan(0);
+  expect(m.costLoc).toBeGreaterThanOrEqual(m.floorLoc);
+  expect(m.typeHealth).toBeNull();
+  expect(Array.isArray(m.hotspots)).toBe(true);
 
   // Snapshot version is stable once everything is computed — the cheap
   // `?since=` probe contract relies on this.
@@ -393,4 +426,263 @@ test("engine applies blameAliases to the rollup", async () => {
   const graph = await engine.getGraph();
   const app = graph.vue.nodes.find((node) => node.file === "src/App.vue")!;
   expect(app.blame?.authorLines).toEqual({ Alice: 3 });
+});
+
+// --- maintainability score -------------------------------------------------
+
+// Build a `full`-shaped graph from an edge list (importer -> imported) and a
+// per-file spec, reusing `makeGraph` so nodes carry real facts. Defaults: 10
+// LoC, zero type errors (green). `te: null` models the type pass being off.
+function facts(spec: Record<string, { loc?: number; te?: number | null }>): Map<string, FileFacts> {
+  const map = new Map<string, FileFacts>();
+  for (const [id, s] of Object.entries(spec)) {
+    map.set(id, {
+      kind: "ts",
+      loc: s.loc ?? 10,
+      blame: null,
+      typeErrors: s.te === undefined ? 0 : s.te,
+      status: { loc: "ready", blame: "ready", typecheck: "ready" },
+      errors: {},
+    });
+  }
+  return map;
+}
+function graphOf(edges: [string, string][], f: Map<string, FileFacts>): Graph {
+  const children = new Map<string, Set<string>>();
+  for (const [from, to] of edges) {
+    let kids = children.get(from);
+    if (!kids) {
+      kids = new Set();
+      children.set(from, kids);
+    }
+    kids.add(to);
+  }
+  return makeGraph(new Set(f.keys()), children, f, "/r");
+}
+
+test("maintainability scores a clean tree far above a tangled ball", () => {
+  // Shallow tree: entry imports leaves; leaves import nothing. No cycles.
+  const tree = graphOf(
+    [
+      ["/r/e.ts", "/r/a.ts"],
+      ["/r/e.ts", "/r/b.ts"],
+      ["/r/e.ts", "/r/c.ts"],
+    ],
+    facts({ "/r/e.ts": {}, "/r/a.ts": {}, "/r/b.ts": {}, "/r/c.ts": {} }),
+  );
+  // Same four files, mutually importing — one big cycle.
+  const ball = graphOf(
+    [
+      ["/r/e.ts", "/r/a.ts"],
+      ["/r/a.ts", "/r/b.ts"],
+      ["/r/b.ts", "/r/c.ts"],
+      ["/r/c.ts", "/r/e.ts"],
+      ["/r/a.ts", "/r/e.ts"],
+      ["/r/b.ts", "/r/a.ts"],
+    ],
+    facts({ "/r/e.ts": {}, "/r/a.ts": {}, "/r/b.ts": {}, "/r/c.ts": {} }),
+  );
+
+  const clean = scoreMaintainability(tree);
+  const tangled = scoreMaintainability(ball);
+  expect(clean.score).toBeGreaterThan(80);
+  expect(clean.cycleLoc).toBe(0);
+  expect(tangled.score).toBeLessThan(clean.score);
+  expect(tangled.cycleLoc).toBeGreaterThan(0);
+});
+
+test("maintainability penalises adding a cycle to an acyclic chain", () => {
+  const spec = facts({ "/r/a.ts": {}, "/r/b.ts": {}, "/r/c.ts": {} });
+  const chain = graphOf(
+    [
+      ["/r/a.ts", "/r/b.ts"],
+      ["/r/b.ts", "/r/c.ts"],
+    ],
+    spec,
+  );
+  const cyclic = graphOf(
+    [
+      ["/r/a.ts", "/r/b.ts"],
+      ["/r/b.ts", "/r/c.ts"],
+      ["/r/c.ts", "/r/a.ts"],
+    ],
+    spec,
+  );
+  const acyclic = scoreMaintainability(chain);
+  const withCycle = scoreMaintainability(cyclic);
+  expect(acyclic.cycleLoc).toBe(0);
+  expect(withCycle.cycleLoc).toBe(1);
+  expect(withCycle.score).toBeLessThan(acyclic.score);
+});
+
+test("maintainability does not punish a stable high-fan-in foundation", () => {
+  const spec = () =>
+    facts({
+      "/r/h.ts": {},
+      "/r/v1.ts": {},
+      "/r/v2.ts": {},
+      "/r/v3.ts": {},
+      "/r/v4.ts": {},
+      "/r/v5.ts": {},
+    });
+  const importsH: [string, string][] = [
+    ["/r/v1.ts", "/r/h.ts"],
+    ["/r/v2.ts", "/r/h.ts"],
+    ["/r/v3.ts", "/r/h.ts"],
+    ["/r/v4.ts", "/r/h.ts"],
+    ["/r/v5.ts", "/r/h.ts"],
+  ];
+  // A: H is a pure sink (imports nothing) — stable despite five importers.
+  const stable = scoreMaintainability(graphOf(importsH, spec()));
+  // B: same fan-in, but H now imports three *volatile* modules (each pulls its
+  // own private leaves, so their instability is high) → H becomes a volatile
+  // hub. Importing *stable* leaves instead would leave H stable (next test).
+  const volatile = scoreMaintainability(
+    graphOf(
+      [
+        ...importsH,
+        ["/r/h.ts", "/r/m1.ts"],
+        ["/r/h.ts", "/r/m2.ts"],
+        ["/r/h.ts", "/r/m3.ts"],
+        ["/r/m1.ts", "/r/m1a.ts"],
+        ["/r/m1.ts", "/r/m1b.ts"],
+        ["/r/m2.ts", "/r/m2a.ts"],
+        ["/r/m2.ts", "/r/m2b.ts"],
+        ["/r/m3.ts", "/r/m3a.ts"],
+        ["/r/m3.ts", "/r/m3b.ts"],
+      ],
+      facts({
+        "/r/h.ts": {},
+        "/r/v1.ts": {},
+        "/r/v2.ts": {},
+        "/r/v3.ts": {},
+        "/r/v4.ts": {},
+        "/r/v5.ts": {},
+        "/r/m1.ts": {},
+        "/r/m2.ts": {},
+        "/r/m3.ts": {},
+        "/r/m1a.ts": {},
+        "/r/m1b.ts": {},
+        "/r/m2a.ts": {},
+        "/r/m2b.ts": {},
+        "/r/m3a.ts": {},
+        "/r/m3b.ts": {},
+      }),
+    ),
+  );
+  // High fan-in alone barely dents the score; volatility on the same hub does.
+  expect(stable.score).toBeGreaterThan(90);
+  expect(volatile.score).toBeLessThan(stable.score);
+});
+
+test("importing a stable target keeps the importer stable; a volatile target does not", () => {
+  // C is imported by X and imports one target T; only T's own stability varies.
+  // Weighted fan-out means C's instability tracks what it depends on.
+  const cInstability = (
+    extra: [string, string][],
+    extraSpec: Record<string, { loc?: number; te?: number | null }>,
+  ) => {
+    const g = graphOf(
+      [["/r/x.ts", "/r/c.ts"], ["/r/c.ts", "/r/t.ts"], ...extra],
+      facts({ "/r/x.ts": {}, "/r/c.ts": {}, "/r/t.ts": {}, ...extraSpec }),
+    );
+    return scoreMaintainability(g).hotspots.find((h) => h.file === "c.ts")!.instability;
+  };
+  // T is a pure sink (stable) → importing it leaves C perfectly stable.
+  expect(cInstability([], {})).toBe(0);
+  // T imports three leaves (volatile) → importing it makes C look unstable.
+  const withVolatileT = cInstability(
+    [
+      ["/r/t.ts", "/r/l1.ts"],
+      ["/r/t.ts", "/r/l2.ts"],
+      ["/r/t.ts", "/r/l3.ts"],
+    ],
+    { "/r/l1.ts": {}, "/r/l2.ts": {}, "/r/l3.ts": {} },
+  );
+  expect(withVolatileT).toBeGreaterThan(0);
+});
+
+test("comprehension charges volatile fan-out, not a wall of stable imports", () => {
+  // A hub importing a dozen stable leaves (each imports nothing) exceeds the raw
+  // fan-out budget but pays no comprehension — its weighted fan-out is ~0.
+  const stableEdges: [string, string][] = [];
+  const stableSpec: Record<string, { loc?: number; te?: number | null }> = { "/r/hub.ts": {} };
+  for (let i = 0; i < 12; i++) {
+    stableEdges.push(["/r/hub.ts", `/r/leaf${i}.ts`]);
+    stableSpec[`/r/leaf${i}.ts`] = {};
+  }
+  const stable = scoreMaintainability(graphOf(stableEdges, facts(stableSpec)));
+  expect(stable.drivers.comprehension).toBe(0);
+
+  // Same shape, but each imported module is itself volatile (pulls four private
+  // leaves), so the hub's weighted fan-out crosses the budget.
+  const volEdges: [string, string][] = [];
+  const volSpec: Record<string, { loc?: number; te?: number | null }> = { "/r/hub.ts": {} };
+  for (let i = 0; i < 12; i++) {
+    volEdges.push(["/r/hub.ts", `/r/mod${i}.ts`]);
+    volSpec[`/r/mod${i}.ts`] = {};
+    for (let j = 0; j < 4; j++) {
+      volEdges.push([`/r/mod${i}.ts`, `/r/mod${i}_${j}.ts`]);
+      volSpec[`/r/mod${i}_${j}.ts`] = {};
+    }
+  }
+  const volatile = scoreMaintainability(graphOf(volEdges, facts(volSpec)));
+  expect(volatile.drivers.comprehension).toBeGreaterThan(0);
+});
+
+test("maintainability penalises type errors, more when the red file is widely imported", () => {
+  // v1..v3 import h, which imports the shared util u — so u is reachable from
+  // (imported by) the whole graph, while a view v1 is imported by nobody.
+  const edges: [string, string][] = [
+    ["/r/v1.ts", "/r/h.ts"],
+    ["/r/v2.ts", "/r/h.ts"],
+    ["/r/v3.ts", "/r/h.ts"],
+    ["/r/h.ts", "/r/u.ts"],
+  ];
+  const ids = { "/r/h.ts": {}, "/r/u.ts": {}, "/r/v1.ts": {}, "/r/v2.ts": {}, "/r/v3.ts": {} };
+  const green = scoreMaintainability(graphOf(edges, facts(ids)));
+  // One red file, same LoC, at a leaf view (blast radius 0) vs the shared util (high blast radius).
+  const redLeaf = scoreMaintainability(graphOf(edges, facts({ ...ids, "/r/v1.ts": { te: 1 } })));
+  const redUtil = scoreMaintainability(graphOf(edges, facts({ ...ids, "/r/u.ts": { te: 1 } })));
+
+  // A type error lowers the score; the same error in a widely-imported file
+  // lowers it more (blast radius amplifies the type term).
+  expect(redLeaf.score).toBeLessThan(green.score);
+  expect(redUtil.score).toBeLessThan(redLeaf.score);
+  expect(redUtil.drivers.types).toBeGreaterThan(0);
+  expect(green.drivers.types).toBe(0);
+  expect(green.typeHealth).toBe(1);
+  expect(redUtil.typeHealth).toBeLessThan(1);
+});
+
+test("maintainability reports typeHealth null when the type pass is off", () => {
+  const graph = graphOf(
+    [["/r/a.ts", "/r/b.ts"]],
+    facts({ "/r/a.ts": { te: null }, "/r/b.ts": { te: null } }),
+  );
+  const result = scoreMaintainability(graph);
+  expect(result.typeHealth).toBeNull();
+  expect(result.drivers.types).toBe(0);
+});
+
+test("maintainability is size-invariant across disjoint identical subgraphs", () => {
+  const oneEdges: [string, string][] = [
+    ["/r/e.ts", "/r/a.ts"],
+    ["/r/e.ts", "/r/b.ts"],
+  ];
+  const one = scoreMaintainability(
+    graphOf(oneEdges, facts({ "/r/e.ts": {}, "/r/a.ts": {}, "/r/b.ts": {} })),
+  );
+  // Three disjoint copies of the same tree — per-file costs are identical, so
+  // the normalised score must not move with sheer size.
+  const tripleEdges: [string, string][] = [];
+  const tripleSpec: Record<string, { loc?: number }> = {};
+  for (const k of [0, 1, 2]) {
+    tripleEdges.push([`/r/e${k}.ts`, `/r/a${k}.ts`], [`/r/e${k}.ts`, `/r/b${k}.ts`]);
+    tripleSpec[`/r/e${k}.ts`] = {};
+    tripleSpec[`/r/a${k}.ts`] = {};
+    tripleSpec[`/r/b${k}.ts`] = {};
+  }
+  const triple = scoreMaintainability(graphOf(tripleEdges, facts(tripleSpec)));
+  expect(Math.abs(triple.score - one.score)).toBeLessThanOrEqual(1);
 });

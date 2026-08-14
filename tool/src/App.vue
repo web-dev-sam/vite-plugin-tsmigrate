@@ -175,7 +175,9 @@ onUnmounted(() => {
     :readouts="readouts"
     :header="header"
     :ripgrep="ripgrep"
+    :maintainability="graph?.maintainability ?? null"
     @depth-click="chart?.toggleDepth($event)"
+    @open-source="source = $event"
   />
 
   <p
