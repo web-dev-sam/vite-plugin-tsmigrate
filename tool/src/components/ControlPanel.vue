@@ -67,6 +67,18 @@ function depthTitle(d: DepthRow): string {
 
 const pct = (n: number) => (n * 100).toFixed(0);
 
+const dirOf = (f: string): string => f.slice(0, f.lastIndexOf("/") + 1);
+const baseOf = (f: string): string => f.slice(f.lastIndexOf("/") + 1);
+// Tooltip text after the (purple) filename — one string so the formatter can't
+// wedge stray whitespace between the segments.
+function hotspotMeta(h: Maintainability["hotspots"][number]): string {
+  return (
+    ` · ${h.loc} LoC · imports ${h.fanOut} · imported by ${h.fanIn}` +
+    ` · instability ${h.instability.toFixed(2)} · blast radius ${pct(h.blastRadius)}% of the codebase` +
+    `${h.inCycle ? " · in a cycle" : ""}. Click to isolate its dependents.`
+  );
+}
+
 // Score grade: green from 80, amber from 50, else red — mirrors the node palette.
 function scoreTone(score: number): string {
   if (score >= 80) {
@@ -214,10 +226,14 @@ const scoreOpen = ref(true);
                 v-for="h in maintainability.hotspots.slice(0, 6)"
                 :key="h.id"
                 as="tr"
-                :content="`${h.file} · ${h.loc} LoC · imports ${h.fanOut} · imported by ${h.fanIn} · instability ${h.instability.toFixed(2)} · blast radius ${pct(h.blastRadius)}% of the codebase${h.inCycle ? ' · in a cycle' : ''}. Click to isolate its dependents.`"
                 class="cursor-pointer transition-colors hover:[&>td]:text-fg"
                 @click="emit('focusNode', h.id)"
               >
+                <template #content
+                  ><span class="text-muted">{{ dirOf(h.file) }}</span
+                  ><span class="text-purple">{{ baseOf(h.file) }}</span
+                  >{{ hotspotMeta(h) }}</template
+                >
                 <td class="max-w-[240px] truncate py-0.5 pl-2 first:rounded-l">
                   <span v-if="h.inCycle" class="text-red">↻ </span>{{ h.file }}
                 </td>

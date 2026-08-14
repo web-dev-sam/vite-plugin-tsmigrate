@@ -10,7 +10,10 @@ import { onBeforeUnmount, ref } from "vue";
  * `as` sets the wrapper tag so the trigger stays layout-correct in any context
  * (e.g. `tr` inside a table); fall-through attrs (class, @click, …) land on it.
  */
-const props = withDefaults(defineProps<{ content: string; as?: string }>(), { as: "div" });
+const props = withDefaults(defineProps<{ content?: string; as?: string }>(), {
+  as: "div",
+  content: "",
+});
 
 const anchor = ref<HTMLElement | null>(null);
 const shown = ref(false);
@@ -55,7 +58,7 @@ onBeforeUnmount(() => clearTimeout(timer));
           :style="{ left: `${pos.left}px`, top: `${pos.top}px` }"
           role="tooltip"
         >
-          {{ content }}
+          <slot name="content">{{ content }}</slot>
           <span
             class="absolute top-full left-1/2 size-2 -translate-x-1/2 -translate-y-1/2 rotate-45 border-r border-b border-border bg-[#1c2128]"
           />

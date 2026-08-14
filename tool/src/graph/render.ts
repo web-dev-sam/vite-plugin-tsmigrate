@@ -314,10 +314,13 @@ export function initGraph(opts: InitOptions): GraphController {
     // Actual file ending (e.g. `tsx`) rather than the coarse `vue`/`ts` kind.
     const ext = d.file.includes(".") ? d.file.split(".").pop()! : d.kind;
     const links = adj.get(d.id)?.size ?? 0;
+    const slash = d.file.lastIndexOf("/");
+    const fileDir = slash < 0 ? "" : d.file.slice(0, slash + 1);
+    const fileBase = slash < 0 ? d.file : d.file.slice(slash + 1);
     let html = `<b>${esc(d.name)}</b>${status} <span class="tip-p">${esc(ext)}</span>`;
     if (own) html += `<br><span class="tip-p">${esc(own)}</span>`;
     html +=
-      `<br><span class="tip-p">${esc(d.file)}</span>` +
+      `<br><span class="tip-p">${esc(fileDir)}<span class="tip-name">${esc(fileBase)}</span></span>` +
       `<br><span class="tip-p">depth ${d.height} · ${d.size} LOC · ${links} links</span>`;
     if (controls.showBlame) {
       const rows = Object.entries(d.blame).sort((a, b) => b[1] - a[1]);
