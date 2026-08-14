@@ -177,7 +177,7 @@ onUnmounted(() => {
     :ripgrep="ripgrep"
     :maintainability="graph?.maintainability ?? null"
     @depth-click="chart?.toggleDepth($event)"
-    @open-source="source = $event"
+    @focus-node="chart?.focusDependents($event)"
   />
 
   <p

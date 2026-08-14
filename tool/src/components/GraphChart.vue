@@ -44,8 +44,11 @@ watch(
 
 onUnmounted(() => controller?.destroy());
 
-// Depth-row isolate is driven imperatively from the panel via the parent.
-defineExpose({ toggleDepth: (height: number) => controller?.toggleDepth(height) });
+// Depth-row isolate and hotspot-row focus are driven imperatively from the panel via the parent.
+defineExpose({
+  toggleDepth: (height: number) => controller?.toggleDepth(height),
+  focusDependents: (id: string) => controller?.focusDependents(id),
+});
 </script>
 
 <template>

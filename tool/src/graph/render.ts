@@ -119,6 +119,8 @@ export interface GraphController {
   setControls(controls: Controls): void;
   /** Toggle a depth-row isolate (clears it when already active). */
   toggleDepth(height: number): void;
+  /** Isolate a node's supertree (its dependents) — the panel's hotspot-row click. */
+  focusDependents(id: string): void;
   /** Tear down the simulation, listeners and DOM. */
   destroy(): void;
 }
@@ -612,10 +614,7 @@ export function initGraph(opts: InitOptions): GraphController {
         // Shift-click isolates the supertree (everything that depends on this
         // node — what breaks if it changes); a plain click isolates the import
         // subtree. Re-clicking the same node in the same direction clears it.
-        const dir = e.shiftKey ? "up" : "down";
-        const already = focus !== null && focus.root === d.id && focus.dir === dir;
-        focus = already ? null : { root: d.id, dir, set: reachSet(d.id, dir === "up" ? inn : out) };
-        refresh();
+        isolate(d.id, e.shiftKey ? "up" : "down");
       })
       .on("dblclick", (e: MouseEvent, d) => {
         // Own the double-click so d3-zoom's dblclick-to-zoom doesn't also fire.
@@ -673,6 +672,21 @@ export function initGraph(opts: InitOptions): GraphController {
     refresh();
   }
 
+  // Toggle a node-focus isolate; `refresh()` reapplies visibility + link overlay.
+  function isolate(id: string, dir: "down" | "up"): void {
+    const already = focus !== null && focus.root === id && focus.dir === dir;
+    focus = already ? null : { root: id, dir, set: reachSet(id, dir === "up" ? inn : out) };
+    refresh();
+  }
+
+  // Panel hotspot-row click: isolate a node's dependents (its supertree), just
+  // like shift-clicking it. Ignored when the id isn't a node in the current
+  // graph view (e.g. a `.ts` hotspot while the `.vue`-only graph is shown).
+  function focusDependents(id: string): void {
+    if (!out.has(id)) return;
+    isolate(id, "up");
+  }
+
   function destroy(): void {
     if (sim) sim.stop();
     svg.on(".zoom", null);
@@ -681,5 +695,5 @@ export function initGraph(opts: InitOptions): GraphController {
     tooltip.style.opacity = "0";
   }
 
-  return { setGraph, setControls, toggleDepth, destroy };
+  return { setGraph, setControls, toggleDepth, focusDependents, destroy };
 }

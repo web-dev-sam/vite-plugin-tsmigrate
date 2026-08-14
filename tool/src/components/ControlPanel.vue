@@ -30,7 +30,7 @@ defineProps<{
 }>();
 const emit = defineEmits<{
   depthClick: [height: number];
-  openSource: [node: { id: string; file: string }];
+  focusNode: [id: string];
 }>();
 
 const mode = defineModel<Mode>("mode", { required: true });
@@ -214,9 +214,9 @@ const scoreOpen = ref(true);
                 v-for="h in maintainability.hotspots.slice(0, 6)"
                 :key="h.id"
                 as="tr"
-                :content="`${h.file} · ${h.loc} LoC · imports ${h.fanOut} · imported by ${h.fanIn} · instability ${h.instability.toFixed(2)} · blast radius ${pct(h.blastRadius)}% of the codebase${h.inCycle ? ' · in a cycle' : ''}. Click to open source.`"
+                :content="`${h.file} · ${h.loc} LoC · imports ${h.fanOut} · imported by ${h.fanIn} · instability ${h.instability.toFixed(2)} · blast radius ${pct(h.blastRadius)}% of the codebase${h.inCycle ? ' · in a cycle' : ''}. Click to isolate its dependents.`"
                 class="cursor-pointer transition-colors hover:[&>td]:text-fg"
-                @click="emit('openSource', { id: h.id, file: h.file })"
+                @click="emit('focusNode', h.id)"
               >
                 <td class="max-w-[240px] truncate py-0.5 pl-2 first:rounded-l">
                   <span v-if="h.inCycle" class="text-red">↻ </span>{{ h.file }}
