@@ -2,6 +2,7 @@ import { dirname, join } from "node:path";
 import { expect, test } from "vite-plus/test";
 import { applyBlameAliases, parseBlamePorcelain } from "../src/analysis/analyzers/blame.ts";
 import { locAnalyzer } from "../src/analysis/analyzers/loc.ts";
+import { complexityAnalyzer } from "../src/analysis/analyzers/complexity.ts";
 import { AnalysisEngine } from "../src/analysis/engine.ts";
 import { crawlGraph, findEntries } from "../src/analysis/graph.ts";
 import type { AnalysisHost } from "../src/analysis/host.ts";
@@ -9,6 +10,7 @@ import { scoreMaintainability } from "../src/analysis/maintainability.ts";
 import { computeHeights, type FileFacts, groupOf, makeGraph } from "../src/analysis/topology.ts";
 import type { Graph } from "../src/shared/types.ts";
 import { parseTscErrors } from "../src/analysis/typecheck.ts";
+import { cyclomaticComplexity } from "../src/analysis/imports.ts";
 
 const ROOT = "/app";
 
@@ -380,7 +382,7 @@ test("engine produces a complete two-graph snapshot with all facts", async () =>
   expect(app.name).toBe("App");
   expect(app.kind).toBe("vue");
   expect(app.loc).toBe(5);
-  expect(app.status).toEqual({ loc: "ready", blame: "ready", typecheck: "ready" });
+  expect(app.status).toEqual({ loc: "ready", cc: "ready", blame: "ready", typecheck: "ready" });
   expect(app.blame?.authorLines).toEqual({ Alice: 2, Bob: 1 });
   // Disabled type-check: typed everywhere, no red.
   expect(app.typeErrors).toBeNull();
@@ -484,9 +486,10 @@ test("topology computes heights, strict-red propagation, and groups", () => {
   const fact = (typeErrors: number | null): FileFacts => ({
     kind: "ts",
     loc: 1,
+    cc: 0,
     blame: null,
     typeErrors,
-    status: { loc: "ready", blame: "ready", typecheck: "ready" },
+    status: { loc: "ready", cc: "ready", blame: "ready", typecheck: "ready" },
     errors: {},
   });
   const facts = new Map<string, FileFacts>([
@@ -618,15 +621,18 @@ test("engine applies blameAliases to the rollup", async () => {
 // Build a `full`-shaped graph from an edge list (importer -> imported) and a
 // per-file spec, reusing `makeGraph` so nodes carry real facts. Defaults: 10
 // LoC, zero type errors (green). `te: null` models the type pass being off.
-function facts(spec: Record<string, { loc?: number; te?: number | null }>): Map<string, FileFacts> {
+function facts(
+  spec: Record<string, { loc?: number; te?: number | null; cc?: number }>,
+): Map<string, FileFacts> {
   const map = new Map<string, FileFacts>();
   for (const [id, s] of Object.entries(spec)) {
     map.set(id, {
       kind: "ts",
       loc: s.loc ?? 10,
+      cc: s.cc ?? 0,
       blame: null,
       typeErrors: s.te === undefined ? 0 : s.te,
-      status: { loc: "ready", blame: "ready", typecheck: "ready" },
+      status: { loc: "ready", cc: "ready", blame: "ready", typecheck: "ready" },
       errors: {},
     });
   }
@@ -731,6 +737,80 @@ test("maintainability scores a clean tree far above a tangled ball", () => {
   expect(clean.cycleLoc).toBe(0);
   expect(tangled.score).toBeLessThan(clean.score);
   expect(tangled.cycleLoc).toBeGreaterThan(0);
+});
+
+test("cyclomatic complexity counts decision points, not lines", () => {
+  const flat = "const a = 1;\nconst b = 2;\nexport const c = a;\n";
+  expect(cyclomaticComplexity(flat, "/x.ts")).toBe(0);
+
+  const branchy = [
+    "export function f(n: number, a: boolean, b: boolean, c: boolean) {",
+    "  if (n > 0) return 1;", // if +1
+    "  for (let i = 0; i < n; i++) {", // for +1
+    "    while (i > 2) i--;", // while +1
+    "  }",
+    "  switch (n) {",
+    "    case 1:", // case +1
+    "      return 2;",
+    "    case 2:", // case +1
+    "      return 3;",
+    "    default:", // default +0
+    "      break;",
+    "  }",
+    "  const x = n > 0 ? 1 : 2;", // ?: +1
+    "  return (a && b) || c;", // && +1, || +1
+    "}",
+  ].join("\n");
+  expect(cyclomaticComplexity(branchy, "/x.ts")).toBe(8);
+
+  // Unparseable source is graceful, not a throw.
+  expect(cyclomaticComplexity("function (( {", "/x.ts")).toBe(0);
+});
+
+test("complexity analyzer measures only the <script> of an SFC", async () => {
+  const sfc =
+    '<script setup lang="ts">\nconst x = a ? 1 : 2;\n</script>\n<template><div v-if="x" /></template>\n';
+  const host = { readFile: async () => sfc } as unknown as AnalysisHost;
+  // The `?:` in the script counts (1); the template `v-if` is not parsed.
+  expect(await complexityAnalyzer.analyze({ host, file: "/c.vue" })).toBe(1);
+});
+
+test("complexity amplifies a file's flaw cost but never punishes on its own", () => {
+  const edges: [string, string][] = [
+    ["/r/i1.ts", "/r/hub.ts"],
+    ["/r/i2.ts", "/r/hub.ts"],
+    ["/r/i3.ts", "/r/hub.ts"],
+  ];
+  const build = (hubCc: number) =>
+    scoreMaintainability(
+      graphOf(
+        edges,
+        facts({
+          "/r/hub.ts": { loc: 20, te: 1, cc: hubCc },
+          "/r/i1.ts": { loc: 20 },
+          "/r/i2.ts": { loc: 20 },
+          "/r/i3.ts": { loc: 20 },
+        }),
+      ),
+    );
+  const simple = build(0);
+  const complex = build(20); // density 1.0 → strong amplification
+  // The same type flaw in branch-dense code costs more → lower score, and the
+  // overhead is partly attributed to complexity.
+  expect(complex.score).toBeLessThan(simple.score);
+  expect(simple.complexityAmplification).toBe(0);
+  expect(complex.complexityAmplification).toBeGreaterThan(0);
+
+  // A flawless file is untouched by complexity: no coupling, no type debt →
+  // perfect score however branch-dense it is.
+  const flawlessSimple = scoreMaintainability(
+    graphOf([], facts({ "/r/a.ts": { loc: 50, cc: 0 } })),
+  );
+  const flawlessComplex = scoreMaintainability(
+    graphOf([], facts({ "/r/a.ts": { loc: 50, cc: 100 } })),
+  );
+  expect(flawlessComplex.score).toBe(flawlessSimple.score);
+  expect(flawlessComplex.complexityAmplification).toBe(0);
 });
 
 test("maintainability penalises adding a cycle to an acyclic chain", () => {

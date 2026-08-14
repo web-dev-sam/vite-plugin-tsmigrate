@@ -22,4 +22,5 @@ export interface Analyzer<T> {
 }
 
 export { applyBlameAliases, blameAnalyzer, parseBlamePorcelain } from "./blame.ts";
+export { complexityAnalyzer } from "./complexity.ts";
 export { locAnalyzer } from "./loc.ts";

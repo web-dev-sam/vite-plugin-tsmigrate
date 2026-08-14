@@ -17,12 +17,21 @@ We express each module's cost in **LoC-equivalent units** (a "unit" is the
 effort of reading one line once):
 
 ```math
-\mathrm{cost}(m) \;=\; \mathrm{loc}(m)\cdot\Bigl(\underbrace{1}_{\text{read}} + \underbrace{\alpha\,\max(0,\,C_e(m)-K)}_{\text{comprehension}} + \underbrace{\beta\,I(m)\,r(m)}_{\text{blast}} + \underbrace{\mathrm{type}(m)}_{\text{type risk}}\Bigr)
+\mathrm{cost}(m) \;=\; \mathrm{loc}(m)\cdot\Bigl(\underbrace{1}_{\text{read}} + W(m)\bigl(\underbrace{\alpha\,\max(0,\,C_e^{w}(m)-K)}_{\text{comprehension}} + \underbrace{\beta\,I(m)\,r(m)}_{\text{blast}} + \underbrace{\mathrm{type}(m)}_{\text{type risk}}\bigr)\Bigr)
 ```
 
 ```math
 \mathrm{type}(m) = \begin{cases} \gamma\,\bigl(1 + \delta\,r(m)\bigr) & m \text{ has a type error} \\ 0 & \text{otherwise} \end{cases}
 ```
+
+The **complexity weight** $W(m)=1+\lambda\,\dfrac{\rho(m)}{\rho(m)+D_0}$ scales the
+_flaw_ terms by the file's cyclomatic-complexity density
+$\rho(m)=\mathrm{cc}(m)/\mathrm{loc}(m)$ (decision points per maintainable line).
+Complexity is a **cost amplifier, not a standalone penalty**: a file with no
+coupling or type debt costs $\mathrm{loc}(m)$ however branch-dense it is ($W$
+multiplies only the overhead), and a simple file ($\rho\to0$, $W\to1$) is scored
+exactly as before. Dense logic makes the _real_ flaws — coupling, ripple, type
+errors — costlier to change safely.
 
 The whole-codebase cost is the sum, and the score normalises it against the
 **floor** — the irreducible cost of reading every file once, with no excess
@@ -108,6 +117,19 @@ two of a fully-green one), which is unacceptable for a migration tool. The
 direct term fixes that: a fully-typed codebase scores near its structural
 ceiling, and the score falls monotonically as red code accumulates.
 
+### Complexity — the flaw weight $`W(m)`$
+
+$`\mathrm{cc}(m)`$ is the **cyclomatic complexity** of the file's script: the
+count of decision points (`if`, `?:`, every loop, `catch`, each non-default
+`case`, and each `&&`/`||`/`??`), read from the oxc AST. LoC weighs every line
+the same; a 40-branch function and a flat list of 40 assignments are equal by
+LoC but not by the effort to change them safely. So complexity does not add its
+own term — it **weights** the structural and type flaws above: a coupling edge
+or a type error inside dense, branch-heavy logic costs more than the same flaw
+in simple code. The weight saturates in density ($W \in [1, 1+\lambda)$), so it
+stays bounded and size-invariant like $I$ and $r$. Only the `<script>` is
+parsed, so template branching (`v-if`/`v-for`) is not counted.
+
 ## Why the score is size-invariant
 
 Both `floor` and `cost` scale linearly with total LoC, and every surcharge
@@ -130,6 +152,9 @@ the runaway of the naive model.)
   (`contributions` on the wire, normalised to `[0,1]` by the top contributor).
 - **in cycles** — the fraction of LoC trapped in import cycles.
 - **typed** — LoC-weighted typed fraction (omitted when the type pass is off).
+- **complexity load** — how much of the overhead exists _because_ flaws sit in
+  complex, branch-dense files (the $W>1$ amplification). 0 when the code is
+  flaw-free or uniformly simple.
 - **hotspots** — the files dragging the score down most (highest overhead above their own floor), each with its fan-out,
   fan-in, instability, and blast radius. This is where to look first: lower these and
   the score rises.
@@ -139,21 +164,25 @@ the runaway of the naive model.)
 The model's constants are defined once in
 [`src/analysis/maintainability.ts`](../src/analysis/maintainability.ts):
 
-| Symbol   | Meaning                                              | Default |
-| -------- | ---------------------------------------------------- | ------- |
-| $K$      | healthy fan-out budget (imports before cost)         | `8`     |
-| $\alpha$ | comprehension surcharge per import above $K$         | `0.05`  |
-| $\beta$  | structural blast weight                              | `3`     |
-| $\gamma$ | direct cost of a type error, as a multiple of LoC    | `1.2`   |
-| $\delta$ | blast-radius amplification of a red file's type cost | `4`     |
+| Symbol    | Meaning                                              | Default |
+| --------- | ---------------------------------------------------- | ------- |
+| $K$       | healthy fan-out budget (imports before cost)         | `8`     |
+| $\alpha$  | comprehension surcharge per import above $K$         | `0.05`  |
+| $\beta$   | structural blast weight                              | `3`     |
+| $\gamma$  | direct cost of a type error, as a multiple of LoC    | `1.2`   |
+| $\delta$  | blast-radius amplification of a red file's type cost | `4`     |
+| $\lambda$ | max complexity amplification of a file's flaw cost   | `2`     |
+| $D_0$     | decision density at half amplification (cc / LoC)    | `0.3`   |
 
 ## Limits — what an import graph cannot see
 
 The score is honest about its blind spots; read it as a _relative_ signal, not
 an absolute verdict:
 
-- **Intra-file complexity** — cyclomatic complexity, nesting, a 2000-line
-  `switch`. We see LoC, not shape.
+- **Deep intra-file complexity** — cyclomatic complexity is now measured
+  (decision points in the script) and _amplifies_ a file's flaw cost, but only
+  script logic is seen: template branching (`v-if`/`v-for`) and the shape of a
+  2000-line `switch` beyond its branch count remain invisible.
 - **Real churn** — volatility is proxied by instability ($I$). A frequently
   edited but dependency-free leaf looks stable to the model. True churn needs
   per-file commit history the crawl does not yet collect.

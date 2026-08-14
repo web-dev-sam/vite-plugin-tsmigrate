@@ -132,9 +132,10 @@ test("isolate obeys the depth contract on real makeGraph output", () => {
   const fact = (): FileFacts => ({
     kind: "vue",
     loc: 1,
+    cc: 0,
     blame: null,
     typeErrors: 0,
-    status: { loc: "ready", blame: "ready", typecheck: "ready" },
+    status: { loc: "ready", cc: "ready", blame: "ready", typecheck: "ready" },
     errors: {},
   });
   const facts = new Map([APP, PAGE, WIDGET, BUTTON].map((id) => [id, fact()]));

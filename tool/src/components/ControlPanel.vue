@@ -75,7 +75,7 @@ const baseOf = (f: string): string => f.slice(f.lastIndexOf("/") + 1);
 // wedge stray whitespace between the segments.
 function hotspotMeta(h: Maintainability["hotspots"][number]): string {
   return (
-    ` · ${h.loc} LoC · imports ${h.fanOut} · imported by ${h.fanIn}` +
+    ` · ${h.loc} LoC · ${h.cc} branches · imports ${h.fanOut} · imported by ${h.fanIn}` +
     ` · instability ${h.instability.toFixed(2)} · blast radius ${pct(h.blastRadius)}% of the codebase` +
     `${h.inCycle ? " · in a cycle" : ""}. Click to isolate its dependents.`
   );
@@ -153,7 +153,7 @@ function scoreTone(score: number): string {
           </StatRow>
         </Tooltip>
         <Tooltip
-          content="Ripple risk: files that change often and that much of the codebase depends on. Change one and you have to re-check everything downstream. Files that rarely change don't count, no matter how many import them."
+          content="How far a change to this file spreads. High only when the file both changes often (it depends on many modules) and is widely imported (many files then need re-checking). Otherwise low, however big it is."
         >
           <StatRow
             class="-mx-1 cursor-pointer rounded px-1 transition-colors hover:bg-border/40"
@@ -182,9 +182,22 @@ function scoreTone(score: number): string {
           </StatRow>
         </Tooltip>
         <div
-          v-if="maintainability.cycleLoc > 0 || maintainability.typeHealth !== null"
+          v-if="
+            maintainability.cycleLoc > 0 ||
+            maintainability.typeHealth !== null ||
+            maintainability.complexityAmplification > 0
+          "
           class="border-t border-border/60"
         />
+        <Tooltip
+          v-if="maintainability.complexityAmplification > 0"
+          content="How much of the cost above comes from those flaws sitting in complex, branch-dense files. Complexity never counts on its own — it multiplies the cost of real problems."
+        >
+          <StatRow>
+            <template #label><span class="text-warn">λ</span>complexity load</template>
+            {{ pct(maintainability.complexityAmplification) }}%
+          </StatRow>
+        </Tooltip>
         <Tooltip
           v-if="maintainability.cycleLoc > 0"
           content="Code stuck in import cycles: files that import each other in a loop, so you can't read, test, or change one on its own."

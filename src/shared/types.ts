@@ -31,6 +31,8 @@ export interface ComponentNode {
   kind: "vue" | "ts";
   /** Maintainable source lines — excludes `<style>`/`<svg>` blocks (null until analyzed). */
   loc: number | null;
+  /** Cyclomatic complexity — decision points in the file's script (null until analyzed). */
+  cc: number | null;
   /** Longest import path from this node down to a leaf, within its graph. */
   height: number;
   /** True when this file OR anything in its import subtree has type errors. */
@@ -40,8 +42,8 @@ export interface ComponentNode {
   /** Blame breakdown (null until analyzed; see status.blame). */
   blame: BlameSummary | null;
   /** Per-analyzer progress — the UI renders progressively. */
-  status: { loc: AnalyzerState; blame: AnalyzerState; typecheck: AnalyzerState };
-  errors: Partial<Record<"loc" | "blame" | "typecheck", string>>;
+  status: { loc: AnalyzerState; cc: AnalyzerState; blame: AnalyzerState; typecheck: AnalyzerState };
+  errors: Partial<Record<"loc" | "cc" | "blame" | "typecheck", string>>;
 }
 
 /**
@@ -71,6 +73,8 @@ export interface MaintainabilityHotspot {
   id: string;
   file: string;
   loc: number;
+  /** Cyclomatic complexity (decision points) — amplifies this file's flaw cost. */
+  cc: number;
   /** Direct imports (efferent coupling, Ce). */
   fanOut: number;
   /** Direct importers (afferent coupling, Ca). */
@@ -117,6 +121,12 @@ export interface Maintainability {
    * `types` (the direct cost of red, error-carrying files).
    */
   drivers: { comprehension: number; blast: number; types: number };
+  /**
+   * Fraction of the total flaw-cost that exists *because* flaws sit in
+   * complex (branch-dense) files — i.e. how much complexity amplifies the
+   * overhead. 0 when the codebase is flaw-free or uniformly simple.
+   */
+  complexityAmplification: number;
   /** Fraction of LoC trapped in import cycles (SCCs with more than one member). */
   cycleLoc: number;
   /** Nodes / edges the score was computed over (the `full` graph). */

@@ -54,6 +54,10 @@ const BETA = 3;
 const GAMMA = 1.2;
 /** How much a red file's blast radius amplifies its type cost (a red foundation hurts more than a red leaf). */
 const DELTA = 4;
+/** Max flaw-cost amplification from complexity: a maximally branch-dense file's structural/type overhead is multiplied by up to 1+λ. */
+const LAMBDA = 2;
+/** Decision density (branches per maintainable line) at which complexity amplification reaches half its max. */
+const DENSITY_HALF = 0.3;
 /** Max hotspots returned — the actionable shortlist, not the whole graph. */
 const MAX_HOTSPOTS = 12;
 
@@ -62,6 +66,7 @@ export function scoreMaintainability(graph: Graph): Maintainability {
   const n = nodes.length;
 
   const loc = (i: number) => nodes[i]!.loc ?? 0;
+  const cc = (i: number) => nodes[i]!.cc ?? 0;
   const totalLoc = nodes.reduce((sum, node) => sum + (node.loc ?? 0), 0);
 
   // Type coverage: available iff the type-check pass ran (some node has a
@@ -75,6 +80,7 @@ export function scoreMaintainability(graph: Graph): Maintainability {
       floorLoc: totalLoc,
       costLoc: totalLoc,
       drivers: { comprehension: 0, blast: 0, types: 0 },
+      complexityAmplification: 0,
       cycleLoc: 0,
       nodes: n,
       edges: edges.length,
@@ -175,6 +181,7 @@ export function scoreMaintainability(graph: Graph): Maintainability {
   let overheadBlast = 0;
   let overheadTypes = 0;
   let cycleLoc = 0;
+  let baseFlawLoc = 0;
   const hotspots: MaintainabilityHotspot[] = [];
   const contribC = new Float64Array(n);
   const contribB = new Float64Array(n);
@@ -204,15 +211,23 @@ export function scoreMaintainability(graph: Graph): Maintainability {
     const comprehend = ALPHA * Math.max(0, ceW - HEALTHY_FANOUT);
     const blast = BETA * instability * blastRadius;
     const types = isRed(i) ? GAMMA * (1 + DELTA * blastRadius) : 0;
-    const cost = li * (1 + comprehend + blast + types);
+    const flaws = comprehend + blast + types;
+    // Complexity is a flaw *amplifier*, never a standalone penalty: a dense,
+    // branch-heavy file makes each structural/type flaw costlier to change
+    // safely. A flawless file costs `li` no matter how complex it is, and a
+    // simple file (density → 0) weights its flaws by `li` exactly as before.
+    const density = li > 0 ? cc(i) / li : 0;
+    const cxWeight = 1 + LAMBDA * (density / (density + DENSITY_HALF));
+    const cost = li * (1 + cxWeight * flaws);
 
     costLoc += cost;
-    overheadComprehension += li * comprehend;
-    overheadBlast += li * blast;
-    overheadTypes += li * types;
-    contribC[i] = li * comprehend;
-    contribB[i] = li * blast;
-    contribT[i] = li * types;
+    baseFlawLoc += li * flaws;
+    overheadComprehension += li * cxWeight * comprehend;
+    overheadBlast += li * cxWeight * blast;
+    overheadTypes += li * cxWeight * types;
+    contribC[i] = li * cxWeight * comprehend;
+    contribB[i] = li * cxWeight * blast;
+    contribT[i] = li * cxWeight * types;
     if (contribC[i]! > maxC) maxC = contribC[i]!;
     if (contribB[i]! > maxB) maxB = contribB[i]!;
     if (contribT[i]! > maxT) maxT = contribT[i]!;
@@ -224,6 +239,7 @@ export function scoreMaintainability(graph: Graph): Maintainability {
       id: nodes[i]!.id,
       file: nodes[i]!.file,
       loc: li,
+      cc: cc(i),
       fanOut: ce,
       fanIn: ca,
       instability,
@@ -242,6 +258,9 @@ export function scoreMaintainability(graph: Graph): Maintainability {
           types: overheadTypes / overhead,
         }
       : { comprehension: 0, blast: 0, types: 0 };
+
+  // How much of the flaw-cost exists because flaws sit in complex code.
+  const complexityAmplification = overhead > 0 ? (overhead - baseFlawLoc) / overhead : 0;
 
   // Most negative effect first: a file's overhead above its own floor
   // (cost − loc) is exactly its contribution to costLoc − floorLoc, i.e. how
@@ -268,6 +287,7 @@ export function scoreMaintainability(graph: Graph): Maintainability {
     floorLoc: totalLoc,
     costLoc: Math.round(costLoc),
     drivers,
+    complexityAmplification,
     cycleLoc: cycleLoc / totalLoc,
     nodes: n,
     edges: edges.length,

@@ -1,6 +1,6 @@
 {
   "name": "vite-plugin-tsmigrate",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "A minimal, well-structured Vite 8 plugin (hello world) built with Vite+.",
   "keywords": [
     "plugin",
@@ -8,15 +8,15 @@
     "vite",
     "vite-plugin"
   ],
-  "homepage": "https://github.com/you/vite-plugin-tsmigrate#readme",
+  "homepage": "https://github.com/web-dev-sam/vite-plugin-tsmigrate#readme",
   "bugs": {
-    "url": "https://github.com/you/vite-plugin-tsmigrate/issues"
+    "url": "https://github.com/web-dev-sam/vite-plugin-tsmigrate/issues"
   },
   "license": "MIT",
   "author": "Samuel Braun <sam@webry.com>",
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/you/vite-plugin-tsmigrate.git"
+    "url": "git+https://github.com/web-dev-sam/vite-plugin-tsmigrate.git"
   },
   "files": [
     "dist"

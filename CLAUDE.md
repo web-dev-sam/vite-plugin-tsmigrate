@@ -100,6 +100,20 @@ A minimal, well-structured **Vite 8** plugin (hello world), developed with the
   components + ~76 `.ts` (~450 nodes). Type-check is off (`typeCheckCommand:
 false`) — the registry is a Nuxt app whose `vue-tsc` needs Nuxt's generated
   tsconfig/auto-imports; the crawl still maps the real component graph + LoC.
+- `playground-microshop/` — **twoBirds/MicroComponents** (`gitlab.com/twoBirds/
+microcomponents`) as a submodule under `playground-microshop/microcomponents`:
+  its `demo/shop` — a small, real "Micro Shop" built from plain `.ts` custom
+  elements (no `.vue`, like `playground-vuetify`). The entry imports the shop's
+  own `demo/shop/bundle-entry.ts` barrel, so the crawl fans out across all 13
+  shop components + the shared `helpers.ts` (14 nodes; `.js` import specifiers
+  resolve to their sibling `.ts`). The library itself
+  (`@twobirds/microcomponents`) is a _dependency_, not analysed code: an inline
+  `enforce: "pre"` plugin marks the bare specifier external so the crawl drops
+  it (its source lives in the same submodule, so aliasing it to source would
+  otherwise pull the library's modules in as nodes). No `.vue` nodes → the tool
+  auto-selects the TS/module view. Type-check is off (`typeCheckCommand: false`)
+  — the shop's real type pass runs under the library's own build pipeline, not a
+  standalone tsconfig here; blame is off (shallow checkout).
 
 <!--VITE PLUS START-->
 

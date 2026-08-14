@@ -4,7 +4,12 @@ import type {
   ComponentEdge,
   ComponentGraph,
 } from "../shared/types.ts";
-import { applyBlameAliases, blameAnalyzer, locAnalyzer } from "./analyzers/index.ts";
+import {
+  applyBlameAliases,
+  blameAnalyzer,
+  complexityAnalyzer,
+  locAnalyzer,
+} from "./analyzers/index.ts";
 import { FactStore } from "./cache.ts";
 import { type CrawlFile, crawlGraph, findEntries } from "./graph.ts";
 import type { AnalysisHost } from "./host.ts";
@@ -203,6 +208,18 @@ export class AnalysisEngine {
       this._version++;
     }
 
+    let cc = this.facts.get<number>(id, complexityAnalyzer.name);
+    if (!cc) {
+      try {
+        const data = await complexityAnalyzer.analyze({ host: this.host, file: id });
+        cc = { state: "ready", data };
+      } catch (error) {
+        cc = { state: "error", error: String(error) };
+      }
+      this.facts.set(id, complexityAnalyzer.name, cc);
+      this._version++;
+    }
+
     // Queued analyzer: schedule once, report progressively.
     const blame = this.facts.get<BlameSummary>(id, blameAnalyzer.name);
     if (this.blame && !blame) {
@@ -234,6 +251,9 @@ export class AnalysisEngine {
     if (loc.error) {
       errors.loc = loc.error;
     }
+    if (cc.error) {
+      errors.cc = cc.error;
+    }
     if (blame?.error) {
       errors.blame = blame.error;
     }
@@ -244,10 +264,12 @@ export class AnalysisEngine {
     return {
       kind,
       loc: loc.data ?? null,
+      cc: cc.data ?? null,
       blame: blame?.data ?? null,
       typeErrors,
       status: {
         loc: loc.state,
+        cc: cc.state,
         blame: this.blame ? (blame ? blame.state : "pending") : "ready",
         typecheck: this.typeCheckState,
       },

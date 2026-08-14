@@ -2,7 +2,7 @@
   "version": "2.0.0",
   "tasks": [
     {
-      "label": "Dev",
+      "label": "Dev (vben)",
       "detail": "One coordinated dev loop (scripts/dev.mjs): runs the vben playground (plugin API + prebuilt tool on :7357) and the tool-UI HMR server (:7358) together on matching ports. Edit tool/** for live HMR; edit src/** and the app auto-restarts. Open the tool URL it prints.",
       "type": "shell",
       "command": "node scripts/dev.mjs",
@@ -34,6 +34,20 @@
       "options": {
         "cwd": "${workspaceFolder}",
         "env": { "TSMIGRATE_PLAYGROUND": "playground-shadcn" }
+      },
+      "isBackground": true,
+      "problemMatcher": [],
+      "icon": { "id": "rocket", "color": "terminal.ansiMagenta" },
+      "presentation": { "panel": "dedicated", "reveal": "always" }
+    },
+    {
+      "label": "Dev (microcomponents)",
+      "detail": "Coordinated dev loop against the microcomponents Micro Shop playground (tool-UI HMR + playground). Open the tool URL it prints.",
+      "type": "shell",
+      "command": "node scripts/dev.mjs",
+      "options": {
+        "cwd": "${workspaceFolder}",
+        "env": { "TSMIGRATE_PLAYGROUND": "playground-microshop" }
       },
       "isBackground": true,
       "problemMatcher": [],

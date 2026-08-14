@@ -47,6 +47,15 @@ importers:
         specifier: ^8.0.0
         version: 8.2.1(@types/node@26.2.0)(jiti@2.7.0)(yaml@2.9.0)
 
+  playground-microshop:
+    devDependencies:
+      '@types/node':
+        specifier: ^26.1.1
+        version: 26.2.0
+      vite:
+        specifier: ^8.0.0
+        version: 8.2.1(@types/node@26.2.0)(jiti@2.7.0)(yaml@2.9.0)
+
   playground-shadcn:
     dependencies:
       vue:

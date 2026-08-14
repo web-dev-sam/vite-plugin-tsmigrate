@@ -78,6 +78,75 @@ function langOf(filename: string): "ts" | "tsx" | "js" | "jsx" {
   return /\.(?:c|m)?js$/.test(filename) ? "js" : "ts";
 }
 
+// AST node types that each add one decision point (a branch) to cyclomatic
+// complexity. `SwitchCase` (non-default) and short-circuit `LogicalExpression`
+// are handled separately since they need a field check.
+const DECISION_NODES = new Set([
+  "IfStatement",
+  "ConditionalExpression",
+  "ForStatement",
+  "ForInStatement",
+  "ForOfStatement",
+  "WhileStatement",
+  "DoWhileStatement",
+  "CatchClause",
+]);
+
+/**
+ * Cyclomatic complexity of a source: the number of decision points (branches).
+ * Counts `if`, `?:`, every loop, `catch`, each non-default `case`, and each
+ * short-circuit operator (`&&`, `||`, `??`) in the oxc AST. This is the *shape*
+ * the LoC count cannot see — a 40-branch file and a flat file of equal length
+ * weigh the same by LoC but not here. Only the `<script>` of an SFC is parsed,
+ * so template branching (`v-if`/`v-for`) is not counted. Unparseable → 0.
+ *
+ * Iterative walk (an explicit stack) so a deeply nested file cannot overflow.
+ */
+export function cyclomaticComplexity(code: string, filename: string): number {
+  let count = 0;
+  try {
+    const { program } = parseSync(filename, code, { lang: langOf(filename) });
+    const stack: unknown[] = [program];
+    while (stack.length > 0) {
+      const node = stack.pop();
+      if (Array.isArray(node)) {
+        for (const child of node) {
+          stack.push(child);
+        }
+        continue;
+      }
+      if (!node || typeof node !== "object") {
+        continue;
+      }
+      const record = node as Record<string, unknown>;
+      const type = record.type;
+      if (typeof type === "string") {
+        if (DECISION_NODES.has(type)) {
+          count++;
+        } else if (type === "SwitchCase") {
+          if (record.test != null) {
+            count++;
+          }
+        } else if (type === "LogicalExpression") {
+          const op = record.operator;
+          if (op === "&&" || op === "||" || op === "??") {
+            count++;
+          }
+        }
+      }
+      for (const key in record) {
+        const value = record[key];
+        if (value && typeof value === "object") {
+          stack.push(value);
+        }
+      }
+    }
+  } catch {
+    // Unparseable source has no measurable complexity.
+  }
+  return count;
+}
+
 /**
  * Classify a dynamic-import argument. A lone string is a specifier; a template
  * or string-concatenation with a static prefix becomes a glob (mirroring Vite's
