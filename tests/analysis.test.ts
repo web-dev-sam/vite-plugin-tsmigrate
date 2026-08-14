@@ -18,7 +18,7 @@ const FILES: Record<string, string> = {
   "/app/index.html": '<script type="module" src="/src/main.ts"></script>',
   "/app/src/main.ts": 'import { createApp } from "vue";\nimport App from "./App.vue";\n',
   "/app/src/App.vue":
-    '<script setup lang="ts">\nimport Child from "./components/Child.vue";\nimport { helper } from "./shared";\n</script>\n<template><Child /></template>\n',
+    '<script setup lang="ts">\nimport Child from "./components/Child.vue";\nimport { Deep } from "./shared";\n</script>\n<template><Child /><Deep /></template>\n',
   "/app/src/shared/index.ts":
     'export { default as Deep } from "../components/Deep.vue";\nexport const helper = 1;\n',
   "/app/src/components/Child.vue":
@@ -88,7 +88,7 @@ test("crawls components and collapses barrels into direct edges", async () => {
     from: "/app/src/App.vue",
     to: "/app/src/components/Child.vue",
   });
-  // App → shared/index.ts → Deep.vue collapses to App → Deep.
+  // App imports the Deep component re-exported by the barrel → collapses to App → Deep.
   expect(edges).toContainEqual({
     from: "/app/src/App.vue",
     to: "/app/src/components/Deep.vue",
@@ -273,6 +273,62 @@ test("expands import.meta.glob and computed dynamic imports into nodes", async (
   // import(`./widgets/${n}.vue`) — computed path expanded to ./widgets/*.vue
   expect(nodes).toContain("/g/src/widgets/Chart.vue");
   expect(nodes).toContain("/g/src/widgets/Table.vue");
+});
+
+test("a hub module does not spill its internal imports onto consumers", async () => {
+  // AuthSuite imports only a route-name string from routes.ts; routes.ts imports
+  // many view components internally to build its table. Symbol-level resolution
+  // must NOT link AuthSuite to those views (the production bug: one string
+  // import produced 175 spurious edges).
+  const HUB: Record<string, string> = {
+    "/h/src/main.ts": 'import AuthSuite from "./AuthSuite.vue";\n',
+    "/h/src/AuthSuite.vue":
+      '<script setup lang="ts">\nimport { AUTH_ROUTE } from "./routes";\nconst go = () => AUTH_ROUTE;\n</script>\n<template><button /></template>\n',
+    "/h/src/routes.ts":
+      'import Login from "./views/Login.vue";\n' +
+      'import Signup from "./views/Signup.vue";\n' +
+      'import Reset from "./views/Reset.vue";\n' +
+      'export const AUTH_ROUTE = "auth";\n' +
+      "export const routes = [Login, Signup, Reset];\n",
+    "/h/src/views/Login.vue": "<template><p>login</p></template>\n",
+    "/h/src/views/Signup.vue": "<template><p>signup</p></template>\n",
+    "/h/src/views/Reset.vue": "<template><p>reset</p></template>\n",
+  };
+  const host: AnalysisHost = {
+    root: "/h",
+    configuredEntries: () => [],
+    glob: async () => [],
+    async resolve(spec, importer) {
+      if (!spec.startsWith(".")) {
+        return null;
+      }
+      const base = join(dirname(importer), spec);
+      for (const candidate of [base, `${base}.ts`, `${base}.vue`]) {
+        if (candidate in HUB) {
+          return candidate;
+        }
+      }
+      return null;
+    },
+    async readFile(path) {
+      return HUB[path] ?? null;
+    },
+    async runGit() {
+      return "";
+    },
+    async exec() {
+      return { stdout: "", stderr: "", code: 0 };
+    },
+  };
+
+  const { nodes, edges } = await crawlGraph(host, ["/h/src/main.ts"]);
+  // The views are still discovered as nodes (via routes.ts) — not lost.
+  expect(nodes).toContain("/h/src/AuthSuite.vue");
+  expect(nodes).toContain("/h/src/views/Login.vue");
+  expect(nodes).toContain("/h/src/views/Signup.vue");
+  expect(nodes).toContain("/h/src/views/Reset.vue");
+  // AuthSuite imported only a route-name value → zero spurious component edges.
+  expect(edges.filter((e) => e.from === "/h/src/AuthSuite.vue")).toEqual([]);
 });
 
 test("counts lines of code", async () => {
