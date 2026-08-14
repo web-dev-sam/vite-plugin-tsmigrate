@@ -5,6 +5,7 @@ import type {
   MaintainabilityContributions,
   MaintainabilityDriver,
 } from "../../../src/shared/types.ts";
+import { type Adjacency, buildAdjacency, type FocusDir, isolateSet } from "./select.ts";
 
 /**
  * Framework-agnostic d3 renderer for the radial typing-progress graph — a
@@ -232,11 +233,9 @@ export function initGraph(opts: InitOptions): GraphController {
   let nodeSel: d3.Selection<SVGCircleElement, RNode, SVGGElement, unknown> | null = null;
   let linkSel: d3.Selection<SVGLineElement, RLink, SVGGElement, unknown> | null = null;
   let labelSel: d3.Selection<SVGTextElement, RNode, SVGGElement, unknown> | null = null;
-  // Undirected adjacency (hover), directed importer→imported (subtree), and
-  // its reverse imported→importer (supertree — everything that depends on a node).
-  let adj = new Map<string, Set<string>>();
-  let out = new Map<string, Set<string>>();
-  let inn = new Map<string, Set<string>>();
+  // Adjacency for hover (undirected), the import subtree ("down"/out) and the
+  // supertree ("up"/inn). Rebuilt per graph; see ./select.ts for the contract.
+  let ga: Adjacency = buildAdjacency([], []);
   let nodeR: (n: RNode) => number = () => 6;
   // Driver-highlight rings: the selected driver and the per-node contribution
   // map that sets each ring's colour + opacity (null = no highlight).
@@ -247,7 +246,7 @@ export function initGraph(opts: InitOptions): GraphController {
   // Click-to-isolate: ids reachable from the focused node. `dir` picks the walk
   // — "down" = its import subtree (what it uses), "up" = its supertree (what
   // uses it, i.e. what changes if it changes). null = no focus.
-  let focus: { root: string; dir: "down" | "up"; set: Set<string> } | null = null;
+  let focus: { root: string; dir: FocusDir; set: Set<string> } | null = null;
   // Depth-row isolate: show only this depth (null = no depth filter).
   let depthFocus: number | null = null;
   // The on-screen subset — recomputed each refresh, reused by the blame rollup.
@@ -262,22 +261,6 @@ export function initGraph(opts: InitOptions): GraphController {
     (controls.onlyRed && isGreen(d)) || (focus !== null && !focus.set.has(d.id));
   const isHidden = (d: RNode): boolean =>
     hideBase(d) || (depthFocus !== null && d.height !== depthFocus);
-
-  // BFS a directed edge map from `start`, collecting it and everything reachable.
-  // `out` → the import subtree (descendants); `inn` → the supertree (ancestors).
-  function reachSet(start: string, edges: Map<string, Set<string>>): Set<string> {
-    const seen = new Set<string>([start]);
-    const stack = [start];
-    while (stack.length) {
-      const id = stack.pop()!;
-      for (const t of edges.get(id) ?? [])
-        if (!seen.has(t)) {
-          seen.add(t);
-          stack.push(t);
-        }
-    }
-    return seen;
-  }
 
   const linkId = (end: string | RNode): string => (typeof end === "string" ? end : end.id);
 
@@ -338,7 +321,7 @@ export function initGraph(opts: InitOptions): GraphController {
           : null;
     // Actual file ending (e.g. `tsx`) rather than the coarse `vue`/`ts` kind.
     const ext = d.file.includes(".") ? d.file.split(".").pop()! : d.kind;
-    const links = adj.get(d.id)?.size ?? 0;
+    const links = ga.adj.get(d.id)?.size ?? 0;
     const slash = d.file.lastIndexOf("/");
     const fileDir = slash < 0 ? "" : d.file.slice(0, slash + 1);
     const fileBase = slash < 0 ? d.file : d.file.slice(slash + 1);
@@ -399,14 +382,14 @@ export function initGraph(opts: InitOptions): GraphController {
     let edges = 0;
     const imported = new Set<string>();
     for (const n of shownNodes)
-      for (const t of out.get(n.id) ?? []) {
+      for (const t of ga.out.get(n.id) ?? []) {
         if (shownIds.has(t)) {
           edges++;
           imported.add(t);
         }
       }
     const leaves = shownNodes.filter((n) => {
-      for (const t of out.get(n.id) ?? []) if (shownIds.has(t)) return false;
+      for (const t of ga.out.get(n.id) ?? []) if (shownIds.has(t)) return false;
       return true;
     }).length;
     const roots = shownNodes.filter((n) => !imported.has(n.id)).length;
@@ -661,17 +644,10 @@ export function initGraph(opts: InitOptions): GraphController {
       .translate(-cx, -cy);
     svg.call((s) => zoom.transform(s, fitTransform));
 
-    adj = new Map(nodes.map((n) => [n.id, new Set<string>()]));
-    out = new Map(nodes.map((n) => [n.id, new Set<string>()]));
-    inn = new Map(nodes.map((n) => [n.id, new Set<string>()]));
-    for (const l of links) {
-      const s = linkId(l.source);
-      const t = linkId(l.target);
-      adj.get(s)!.add(t);
-      adj.get(t)!.add(s);
-      out.get(s)!.add(t);
-      inn.get(t)!.add(s);
-    }
+    ga = buildAdjacency(
+      nodes.map((n) => n.id),
+      links.map((l) => ({ source: linkId(l.source), target: linkId(l.target) })),
+    );
 
     nodeSel
       .on("click", (e: MouseEvent, d) => {
@@ -688,7 +664,7 @@ export function initGraph(opts: InitOptions): GraphController {
         onOpenSource({ id: d.id, file: d.file });
       })
       .on("mouseover", (e: MouseEvent, d) => {
-        const nbr = adj.get(d.id)!;
+        const nbr = ga.adj.get(d.id)!;
         // While a search is active it owns the node/label dimming — hover must
         // not reveal filtered-out nodes, so only the link highlight + tooltip
         // react. Without a search, hover dims everything outside the neighbourhood.
@@ -747,9 +723,9 @@ export function initGraph(opts: InitOptions): GraphController {
   }
 
   // Toggle a node-focus isolate; `refresh()` reapplies visibility + link overlay.
-  function isolate(id: string, dir: "down" | "up"): void {
+  function isolate(id: string, dir: FocusDir): void {
     const already = focus !== null && focus.root === id && focus.dir === dir;
-    focus = already ? null : { root: id, dir, set: reachSet(id, dir === "up" ? inn : out) };
+    focus = already ? null : { root: id, dir, set: isolateSet(id, dir, ga) };
     refresh();
   }
 
@@ -757,7 +733,7 @@ export function initGraph(opts: InitOptions): GraphController {
   // like shift-clicking it. Ignored when the id isn't a node in the current
   // graph view (e.g. a `.ts` hotspot while the `.vue`-only graph is shown).
   function focusDependents(id: string): void {
-    if (!out.has(id)) return;
+    if (!ga.out.has(id)) return;
     isolate(id, "up");
   }
 
