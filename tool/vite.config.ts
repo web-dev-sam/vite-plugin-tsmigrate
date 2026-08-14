@@ -16,7 +16,26 @@ export default defineConfig({
   // (default port 7357; override with TSMIGRATE_API). Not used by the build.
   server: {
     proxy: {
-      "/api": process.env.TSMIGRATE_API ?? "http://localhost:7357",
+      "/api": {
+        target: process.env.TSMIGRATE_API ?? "http://localhost:7357",
+        changeOrigin: true,
+        // The API backend (the plugin's tool server) briefly disappears while
+        // the playground dev server restarts. Answer the gap with a quiet 503 —
+        // the tool polls /api/graph and reconnects on its own — instead of
+        // hanging the request or spewing ECONNREFUSED.
+        configure(proxy) {
+          proxy.on("error", (_err, _req, res) => {
+            if ("writeHead" in res) {
+              if (!res.headersSent) {
+                res.writeHead(503, { "content-type": "application/json" });
+              }
+              res.end('{"error":"tsmigrate backend restarting"}');
+            } else {
+              res.destroy();
+            }
+          });
+        },
+      },
     },
   },
 });

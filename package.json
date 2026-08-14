@@ -38,6 +38,7 @@
   "scripts": {
     "build": "vp pack && vp exec vite build tool",
     "dev": "vp pack --watch",
+    "dev:tool": "node scripts/dev.mjs",
     "test": "vp test",
     "check": "vp check",
     "prepublishOnly": "vp run build"

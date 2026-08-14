@@ -114,6 +114,35 @@ vp check      # format + lint + type-check
 vp run build  # bundle the plugin (tsdown) + build the tool UI to dist/client
 ```
 
+### The tool dev loop
+
+One command runs everything you need to iterate on the tool UI or the plugin:
+
+```bash
+pnpm dev:tool   # or: node scripts/dev.mjs
+```
+
+It starts two long-lived servers and keeps them alive (restarting either if it
+crashes, both torn down on Ctrl-C):
+
+- **app** — a playground dev server (default `playground`; override with
+  `TSMIGRATE_PLAYGROUND=playground-vuetify`). It loads the plugin from source,
+  so the plugin serves its JSON API on `:7357`.
+- **tool** — the tool UI on `http://localhost:7358` with hot reload, proxying
+  `/api` to `:7357`.
+
+Then just edit and watch:
+
+- **Edit `tool/**`** → live HMR at `:7358`. No rebuild.
+- **Edit `src/**`** → the app's Vite server auto-restarts (the config imports
+  the plugin from source); the plugin reclaims `:7357` and the tool reconnects
+  on its next poll. No manual restart.
+
+`dist/client` is only the _shipped_ bundle for the no-HMR path (the plugin
+serving its own prebuilt UI on `:7357`); rebuild it with `vp run build` when
+you want to verify that path. VSCode users get the same via the `Dev + Tool UI
+(HMR)` task in `.vscode/tasks.json`.
+
 ## Playgrounds
 
 Three real-world targets exercise the crawl, each vendored as a git submodule
@@ -231,9 +260,9 @@ URL, via picocolors — Vite's own color lib):
   ➜  tsmigrate: http://localhost:7357/
 ```
 
-The tool shuts down with the dev server. After editing `tool/`, rebuild it with
-`vp run build` (the plugin serves the prebuilt `dist/client`). VSCode users: run
-the `Dev` task from the tracked `.vscode/tasks.json`.
+The tool shuts down with the dev server. To iterate on `tool/` with hot reload
+(no rebuild), use `pnpm dev:tool` — see [The tool dev loop](#the-tool-dev-loop).
+VSCode users: run the `Dev + Tool UI (HMR)` task from `.vscode/tasks.json`.
 
 ## License
 

@@ -1,3 +1,5 @@
+import { once } from "node:events";
+import { createServer as createHttpServer } from "node:http";
 import { fileURLToPath } from "node:url";
 import { createLogger, createServer } from "vite";
 import { expect, test } from "vite-plus/test";
@@ -7,6 +9,7 @@ import {
   tsmigrate,
   VIRTUAL_MODULE_ID,
 } from "../src/index.ts";
+import { listenTool, stopToolServer } from "../src/server/index.ts";
 
 function captureLogger(messages: string[]) {
   const logger = createLogger("info", { allowClearScreen: false });
@@ -133,7 +136,37 @@ test("analyses the playground app and serves the component graph", async () => {
   const probe = await (await fetch(new URL(`/api/graph?since=${graph.version}`, toolUrl))).json();
   expect(probe).toEqual({ version: graph.version, unchanged: true });
 
-  // Lifecycle: closing the dev server also shuts the tool down.
+  // Lifecycle: the tool server is process-scoped (it survives dev-server
+  // restarts so the tool-UI proxy never loses its port), so closing the dev
+  // server leaves it bound; `stopToolServer` is the explicit teardown.
   await server.close();
+  stopToolServer();
   await expect(fetch(toolUrl)).rejects.toThrow();
+});
+
+test("listenTool reclaims its preferred port once it frees, not an ephemeral one", async () => {
+  // A blocker holds the preferred port, standing in for the previous dev-server
+  // instance still releasing it while a restart is in flight.
+  const blocker = createHttpServer();
+  const preferred = await new Promise<number>((resolve) => {
+    blocker.listen(0, "127.0.0.1", () => {
+      const addr = blocker.address();
+      resolve(typeof addr === "object" && addr ? addr.port : 0);
+    });
+  });
+
+  const tool = createHttpServer();
+  const bound = listenTool(tool, preferred);
+  // Wait for the first bind to fail (port busy) so the retry path is exercised,
+  // then release the port — the plugin must reclaim the SAME port, where the
+  // old behaviour drifted straight to a random ephemeral one (orphaning the
+  // tool-UI HMR proxy that targets it).
+  await once(tool, "error");
+  await new Promise<void>((resolve) => blocker.close(() => resolve()));
+
+  try {
+    expect(await bound).toBe(preferred);
+  } finally {
+    await new Promise<void>((resolve) => tool.close(() => resolve()));
+  }
 });

@@ -65,6 +65,9 @@ export default defineConfig({
   optimizeDeps: { noDiscovery: true },
   plugins: [
     tsmigrate({
+      // Dev harness (scripts/dev.mjs) pins the tool server's port so the tool
+      // UI's proxy always targets this exact backend; falls back to the default.
+      toolPort: Number(process.env.TSMIGRATE_PORT) || undefined,
       greeting: "Analyzing vue-vben-admin (Vue 3 + TypeScript)",
       // Real per-file type errors drive node coloring: run vben's own vue-tsc
       // over the web-antd app from this root, so diagnostic paths resolve to

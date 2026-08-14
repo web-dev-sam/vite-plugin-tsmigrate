@@ -5,6 +5,9 @@ import type { ResolvedOptions } from "../options.ts";
 import { collectDiagnostics } from "./diagnostics.ts";
 import { type ContentSearch, readProjectFile } from "./vite-adapter.ts";
 
+/** The tool server's API request handler: resolves `true` when it handled the request. */
+export type ApiHandler = (req: IncomingMessage, res: ServerResponse) => Promise<boolean>;
+
 /**
  * HTTP API of the tool server. This module only maps routes to analysis
  * calls and serializes `shared/types` — the transport seam: replacing
@@ -16,7 +19,7 @@ export function createApiHandler(
   engine: AnalysisEngine,
   options: ResolvedOptions,
   search: ContentSearch,
-): (req: IncomingMessage, res: ServerResponse) => Promise<boolean> {
+): ApiHandler {
   return async (req, res) => {
     const url = new URL(req.url ?? "/", "http://tool.local");
 

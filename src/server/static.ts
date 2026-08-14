@@ -39,6 +39,13 @@ const MIME: Record<string, string> = {
   ".map": "application/json; charset=utf-8",
 };
 
+/** Serves a prebuilt tool-UI file for the request, calling `notFound` when nothing matches. */
+export type ClientHandler = (
+  req: IncomingMessage,
+  res: ServerResponse,
+  notFound: () => void,
+) => void;
+
 /**
  * Minimal static handler for the prebuilt tool UI. Maps a request to a file
  * under `dir` (guarding against path traversal) and falls back to `index.html`
@@ -46,9 +53,7 @@ const MIME: Record<string, string> = {
  * fixed, hashed asset set — a static-server dependency (byte ranges, ETag
  * revalidation, precompression) buys nothing here.
  */
-export function createClientHandler(
-  dir: string,
-): (req: IncomingMessage, res: ServerResponse, notFound: () => void) => void {
+export function createClientHandler(dir: string): ClientHandler {
   const root = resolve(dir);
   const index = join(root, "index.html");
   return (req, res, notFound) => {
