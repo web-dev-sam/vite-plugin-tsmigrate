@@ -652,16 +652,15 @@ export function initGraph(opts: InitOptions): GraphController {
     nodeSel
       .on("click", (e: MouseEvent, d) => {
         e.stopPropagation();
-        // Shift-click isolates the supertree (everything that depends on this
-        // node — what breaks if it changes); a plain click isolates the import
-        // subtree. Re-clicking the same node in the same direction clears it.
+        // Ctrl/Cmd-click opens the file's source. Otherwise isolate: shift-click
+        // isolates the supertree (everything that depends on this node — what
+        // breaks if it changes), a plain click isolates the import subtree.
+        // Re-clicking the same node in the same direction clears it.
+        if (e.ctrlKey || e.metaKey) {
+          onOpenSource({ id: d.id, file: d.file });
+          return;
+        }
         isolate(d.id, e.shiftKey ? "up" : "down");
-      })
-      .on("dblclick", (e: MouseEvent, d) => {
-        // Own the double-click so d3-zoom's dblclick-to-zoom doesn't also fire.
-        e.stopPropagation();
-        e.preventDefault();
-        onOpenSource({ id: d.id, file: d.file });
       })
       .on("mouseover", (e: MouseEvent, d) => {
         const nbr = ga.adj.get(d.id)!;

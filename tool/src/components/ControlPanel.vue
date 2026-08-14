@@ -1,12 +1,11 @@
 <script setup lang="ts">
-import { ref } from "vue";
 import type { Maintainability, MaintainabilityDriver } from "../../../src/shared/types.ts";
 import type { DepthRow, Mode, Readouts } from "../graph/render.ts";
 import Checkbox from "../ui/Checkbox.vue";
+import Collapsible from "../ui/Collapsible.vue";
 import Dot from "../ui/Dot.vue";
 import Field from "../ui/Field.vue";
 import ProgressBar from "../ui/ProgressBar.vue";
-import Section from "../ui/Section.vue";
 import Select from "../ui/Select.vue";
 import StatRow from "../ui/StatRow.vue";
 import Tooltip from "../ui/Tooltip.vue";
@@ -89,9 +88,6 @@ function scoreTone(score: number): string {
   }
   return score >= 50 ? "text-warn" : "text-red";
 }
-
-// Score card collapse — open by default; the number stays visible when closed.
-const scoreOpen = ref(true);
 </script>
 
 <template>
@@ -113,21 +109,8 @@ const scoreOpen = ref(true);
       </p>
     </header>
 
-    <Section v-if="maintainability" flush>
-      <div class="flex items-center justify-between">
-        <button
-          type="button"
-          class="flex flex-1 items-center gap-1.5 text-left text-xs font-medium tracking-wide text-muted uppercase transition-colors hover:text-fg"
-          :aria-expanded="scoreOpen"
-          @click="scoreOpen = !scoreOpen"
-        >
-          <span
-            class="inline-block text-[0.65rem] transition-transform"
-            :class="scoreOpen ? 'rotate-90' : ''"
-            >▶</span
-          >
-          maintainability
-        </button>
+    <Collapsible v-if="maintainability" title="maintainability" flush :default-open="false">
+      <template #actions>
         <Tooltip
           content="How maintainable the codebase is, from 0 to 100. 100 means every change stays small and local; lower means changes tend to ripple across many files. Measured over the full module graph — see docs/maintainability-score.md."
         >
@@ -138,131 +121,129 @@ const scoreOpen = ref(true);
             {{ maintainability.score }}<span class="text-sm font-normal text-muted">/100</span>
           </span>
         </Tooltip>
-      </div>
+      </template>
 
-      <div v-show="scoreOpen">
-        <!-- Overhead drivers: excess coupling | change blast | type errors. -->
-        <Tooltip
-          content="What makes a change cost more than just reading the file: too many imports, ripple from files that lots of code depends on, and type errors. The bar shows how much each one adds."
-        >
-          <div class="mt-2.5 flex h-1.5 overflow-hidden rounded-full bg-border/60">
-            <div
-              class="bg-accent"
-              :style="{ width: pct(maintainability.drivers.comprehension) + '%' }"
-            />
-            <div class="bg-purple" :style="{ width: pct(maintainability.drivers.blast) + '%' }" />
-            <div class="bg-red" :style="{ width: pct(maintainability.drivers.types) + '%' }" />
-          </div>
-        </Tooltip>
-
-        <div class="mt-3 space-y-1.5">
-          <Tooltip
-            content="Files that import too many other modules. A handful of imports is fine; this only counts files that pull in far more than usual — and importing stable things like icons barely counts."
-          >
-            <StatRow
-              class="-mx-1 cursor-pointer rounded px-1 transition-colors hover:bg-border/40"
-              :class="{ 'bg-border/60': activeDriver === 'comprehension' }"
-              @click="emit('driverClick', 'comprehension')"
-            >
-              <template #label>
-                <span class="inline-block size-2 rounded-full bg-accent" />excess coupling
-              </template>
-              {{ pct(maintainability.drivers.comprehension) }}%
-            </StatRow>
-          </Tooltip>
-          <Tooltip
-            content="Ripple risk: files that change often and that much of the codebase depends on. Change one and you have to re-check everything downstream. Files that rarely change don't count, no matter how many import them."
-          >
-            <StatRow
-              class="-mx-1 cursor-pointer rounded px-1 transition-colors hover:bg-border/40"
-              :class="{ 'bg-border/60': activeDriver === 'blast' }"
-              @click="emit('driverClick', 'blast')"
-            >
-              <template #label>
-                <span class="inline-block size-2 rounded-full bg-purple" />change blast
-              </template>
-              {{ pct(maintainability.drivers.blast) }}%
-            </StatRow>
-          </Tooltip>
-          <Tooltip
-            v-if="maintainability.typeHealth !== null"
-            content="Files that have type errors, counted more heavily the more widely they're imported — a bad type in a core file hurts far more than one in a rarely-used leaf."
-          >
-            <StatRow
-              class="-mx-1 cursor-pointer rounded px-1 transition-colors hover:bg-border/40"
-              :class="{ 'bg-border/60': activeDriver === 'types' }"
-              @click="emit('driverClick', 'types')"
-            >
-              <template #label>
-                <span class="inline-block size-2 rounded-full bg-red" />type errors
-              </template>
-              {{ pct(maintainability.drivers.types) }}%
-            </StatRow>
-          </Tooltip>
+      <!-- Overhead drivers: excess coupling | change blast | type errors. -->
+      <Tooltip
+        content="What makes a change cost more than just reading the file: too many imports, ripple from files that lots of code depends on, and type errors. The bar shows how much each one adds."
+      >
+        <div class="mt-2.5 flex h-1.5 overflow-hidden rounded-full bg-border/60">
           <div
-            v-if="maintainability.cycleLoc > 0 || maintainability.typeHealth !== null"
-            class="border-t border-border/60"
+            class="bg-accent"
+            :style="{ width: pct(maintainability.drivers.comprehension) + '%' }"
           />
-          <Tooltip
-            v-if="maintainability.cycleLoc > 0"
-            content="Code stuck in import cycles: files that import each other in a loop, so you can't read, test, or change one on its own."
-          >
-            <StatRow>
-              <template #label><span class="text-red">↻</span>in cycles</template>
-              {{ pct(maintainability.cycleLoc) }}% LoC
-            </StatRow>
-          </Tooltip>
-          <Tooltip
-            v-if="maintainability.typeHealth !== null"
-            content="How much of the codebase, by lines of code, is free of type errors — the migration's headline progress and the biggest lever on the score."
-          >
-            <StatRow>
-              <template #label><Dot tone="green" />typed</template>
-              {{ (maintainability.typeHealth * 100).toFixed(1) }}% LoC
-            </StatRow>
-          </Tooltip>
+          <div class="bg-purple" :style="{ width: pct(maintainability.drivers.blast) + '%' }" />
+          <div class="bg-red" :style="{ width: pct(maintainability.drivers.types) + '%' }" />
         </div>
+      </Tooltip>
 
-        <!-- Highest-cost files: click a row to open its source. -->
-        <div v-if="maintainability.hotspots.length" class="mt-3">
-          <div
-            class="mb-1 flex items-center justify-between px-2 text-xs font-medium tracking-wide text-muted uppercase"
+      <div class="mt-3 space-y-1.5">
+        <Tooltip
+          content="Files that import too many other modules. A handful of imports is fine; this only counts files that pull in far more than usual — and importing stable things like icons barely counts."
+        >
+          <StatRow
+            class="-mx-1 cursor-pointer rounded px-1 transition-colors hover:bg-border/40"
+            :class="{ 'bg-border/60': activeDriver === 'comprehension' }"
+            @click="emit('driverClick', 'comprehension')"
           >
-            <span>hotspots</span>
-            <Tooltip
-              content="Blast radius: how much of the codebase depends on this file, directly or indirectly. 40% means a change here could ripple to about 40% of all the code."
-            >
-              <span>blast radius</span>
-            </Tooltip>
-          </div>
-          <table class="w-full border-collapse text-xs">
-            <tbody>
-              <Tooltip
-                v-for="h in maintainability.hotspots.slice(0, 6)"
-                :key="h.id"
-                as="tr"
-                class="cursor-pointer transition-colors hover:[&>td]:text-fg"
-                @click="emit('focusNode', h.id)"
-              >
-                <template #content
-                  ><span class="text-muted">{{ dirOf(h.file) }}</span
-                  ><span class="text-purple">{{ baseOf(h.file) }}</span
-                  >{{ hotspotMeta(h) }}</template
-                >
-                <td class="max-w-[240px] truncate py-0.5 pl-2 first:rounded-l">
-                  <span v-if="h.inCycle" class="text-red">↻ </span>{{ baseOf(h.file) }}
-                </td>
-                <td class="py-0.5 pr-2 text-right tabular-nums text-muted last:rounded-r">
-                  {{ pct(h.blastRadius) }}%
-                </td>
-              </Tooltip>
-            </tbody>
-          </table>
-        </div>
+            <template #label>
+              <span class="inline-block size-2 rounded-full bg-accent" />excess coupling
+            </template>
+            {{ pct(maintainability.drivers.comprehension) }}%
+          </StatRow>
+        </Tooltip>
+        <Tooltip
+          content="Ripple risk: files that change often and that much of the codebase depends on. Change one and you have to re-check everything downstream. Files that rarely change don't count, no matter how many import them."
+        >
+          <StatRow
+            class="-mx-1 cursor-pointer rounded px-1 transition-colors hover:bg-border/40"
+            :class="{ 'bg-border/60': activeDriver === 'blast' }"
+            @click="emit('driverClick', 'blast')"
+          >
+            <template #label>
+              <span class="inline-block size-2 rounded-full bg-purple" />change blast
+            </template>
+            {{ pct(maintainability.drivers.blast) }}%
+          </StatRow>
+        </Tooltip>
+        <Tooltip
+          v-if="maintainability.typeHealth !== null"
+          content="Files that have type errors, counted more heavily the more widely they're imported — a bad type in a core file hurts far more than one in a rarely-used leaf."
+        >
+          <StatRow
+            class="-mx-1 cursor-pointer rounded px-1 transition-colors hover:bg-border/40"
+            :class="{ 'bg-border/60': activeDriver === 'types' }"
+            @click="emit('driverClick', 'types')"
+          >
+            <template #label>
+              <span class="inline-block size-2 rounded-full bg-red" />type errors
+            </template>
+            {{ pct(maintainability.drivers.types) }}%
+          </StatRow>
+        </Tooltip>
+        <div
+          v-if="maintainability.cycleLoc > 0 || maintainability.typeHealth !== null"
+          class="border-t border-border/60"
+        />
+        <Tooltip
+          v-if="maintainability.cycleLoc > 0"
+          content="Code stuck in import cycles: files that import each other in a loop, so you can't read, test, or change one on its own."
+        >
+          <StatRow>
+            <template #label><span class="text-red">↻</span>in cycles</template>
+            {{ pct(maintainability.cycleLoc) }}% LoC
+          </StatRow>
+        </Tooltip>
+        <Tooltip
+          v-if="maintainability.typeHealth !== null"
+          content="How much of the codebase, by lines of code, is free of type errors — the migration's headline progress and the biggest lever on the score."
+        >
+          <StatRow>
+            <template #label><Dot tone="green" />typed</template>
+            {{ (maintainability.typeHealth * 100).toFixed(1) }}% LoC
+          </StatRow>
+        </Tooltip>
       </div>
-    </Section>
 
-    <Section>
+      <!-- Highest-cost files: click a row to open its source. -->
+      <div v-if="maintainability.hotspots.length" class="mt-3">
+        <div
+          class="mb-1 flex items-center justify-between px-2 text-xs font-medium tracking-wide text-muted uppercase"
+        >
+          <span>hotspots</span>
+          <Tooltip
+            content="Blast radius: how much of the codebase depends on this file, directly or indirectly. 40% means a change here could ripple to about 40% of all the code."
+          >
+            <span>blast radius</span>
+          </Tooltip>
+        </div>
+        <table class="w-full border-collapse text-xs">
+          <tbody>
+            <Tooltip
+              v-for="h in maintainability.hotspots.slice(0, 6)"
+              :key="h.id"
+              as="tr"
+              class="cursor-pointer transition-colors hover:[&>td]:text-fg"
+              @click="emit('focusNode', h.id)"
+            >
+              <template #content
+                ><span class="text-muted">{{ dirOf(h.file) }}</span
+                ><span class="text-purple">{{ baseOf(h.file) }}</span
+                >{{ hotspotMeta(h) }}</template
+              >
+              <td class="max-w-[240px] truncate py-0.5 pl-2 first:rounded-l">
+                <span v-if="h.inCycle" class="text-red">↻ </span>{{ baseOf(h.file) }}
+              </td>
+              <td class="py-0.5 pr-2 text-right tabular-nums text-muted last:rounded-r">
+                {{ pct(h.blastRadius) }}%
+              </td>
+            </Tooltip>
+          </tbody>
+        </table>
+      </div>
+    </Collapsible>
+
+    <Collapsible title="typing">
       <!-- LoC-weighted typing progress of the shown set. -->
       <Tooltip
         content="LoC-weighted typing progress of the shown set: green lines of code ÷ total lines of code."
@@ -294,9 +275,9 @@ const scoreOpen = ref(true);
           </StatRow>
         </Tooltip>
       </div>
-    </Section>
+    </Collapsible>
 
-    <Section>
+    <Collapsible title="settings">
       <div class="space-y-3">
         <TextInput v-model="search" clearable placeholder="search component…" />
         <Tooltip
@@ -338,15 +319,12 @@ const scoreOpen = ref(true);
           <Checkbox v-model="highlightLinks">highlight all links</Checkbox>
         </Tooltip>
       </div>
-    </Section>
+    </Collapsible>
 
     <!-- Per-depth typing; click a row to isolate that ring. -->
-    <Section>
-      <div
-        class="mb-2 flex items-center justify-between px-2 text-xs font-medium tracking-wide text-muted uppercase"
-      >
-        <span>by depth</span>
-        <span>% typed</span>
+    <Collapsible title="by depth">
+      <div class="mb-2 px-2 text-right text-xs font-medium tracking-wide text-muted uppercase">
+        % typed
       </div>
       <table class="w-full border-collapse text-xs">
         <tbody>
@@ -369,19 +347,18 @@ const scoreOpen = ref(true);
           </Tooltip>
         </tbody>
       </table>
-    </Section>
+    </Collapsible>
 
     <!-- Blame LoC per author over the shown set. -->
-    <Section v-if="readouts && readouts.blame.available">
-      <div class="flex items-center justify-between gap-2">
-        <h2 class="text-xs font-medium tracking-wide text-muted uppercase">blame by author</h2>
+    <Collapsible v-if="readouts && readouts.blame.available" title="blame by author">
+      <template #actions>
         <span class="flex gap-3 text-xs text-muted">
           <Checkbox v-model="blameGreen">
             <Dot tone="green" size="sm" class="mr-1.5" />typed
           </Checkbox>
           <Checkbox v-model="blameRed"><Dot tone="red" size="sm" class="mr-1.5" />errors</Checkbox>
         </span>
-      </div>
+      </template>
       <div class="mt-2 text-xs text-muted">
         {{ readouts.blame.set }} · {{ readouts.blame.files }} files ·
         {{ fmt(readouts.blame.sumLoc) }} LoC
@@ -396,11 +373,11 @@ const scoreOpen = ref(true);
           </tr>
         </tbody>
       </table>
-    </Section>
+    </Collapsible>
 
     <footer class="mt-4 border-t border-border/70 pt-4 text-xs text-muted">
       drag to pan · scroll to zoom · click a node for its subtree · shift-click for its dependents ·
-      double-click for source
+      ctrl-click for source
     </footer>
   </aside>
 </template>

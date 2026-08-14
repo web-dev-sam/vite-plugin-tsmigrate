@@ -68,8 +68,8 @@ const header = computed(() => ({
 
 const chart = ref<InstanceType<typeof GraphChart> | null>(null);
 
-// The node whose source the modal is showing (null = closed). Set on a node
-// double-click from the chart; the modal fetches + highlights by id.
+// The node whose source the modal is showing (null = closed). Set on a
+// Ctrl/Cmd-click on a node in the chart; the modal fetches + highlights by id.
 const source = ref<{ id: string; file: string } | null>(null);
 
 // The driver whose per-node contribution the graph highlights as rings
