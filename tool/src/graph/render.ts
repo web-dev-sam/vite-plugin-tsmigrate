@@ -210,13 +210,17 @@ export function initGraph(opts: InitOptions): GraphController {
   let nodeSel: d3.Selection<SVGCircleElement, RNode, SVGGElement, unknown> | null = null;
   let linkSel: d3.Selection<SVGLineElement, RLink, SVGGElement, unknown> | null = null;
   let labelSel: d3.Selection<SVGTextElement, RNode, SVGGElement, unknown> | null = null;
-  // Undirected adjacency (hover) and directed importer→imported (subtree).
+  // Undirected adjacency (hover), directed importer→imported (subtree), and
+  // its reverse imported→importer (supertree — everything that depends on a node).
   let adj = new Map<string, Set<string>>();
   let out = new Map<string, Set<string>>();
+  let inn = new Map<string, Set<string>>();
   let nodeR: (n: RNode) => number = () => 6;
 
-  // Click-to-isolate: ids in the focused node's import subtree (null = none).
-  let focus: { root: string; set: Set<string> } | null = null;
+  // Click-to-isolate: ids reachable from the focused node. `dir` picks the walk
+  // — "down" = its import subtree (what it uses), "up" = its supertree (what
+  // uses it, i.e. what changes if it changes). null = no focus.
+  let focus: { root: string; dir: "down" | "up"; set: Set<string> } | null = null;
   // Depth-row isolate: show only this depth (null = no depth filter).
   let depthFocus: number | null = null;
   // The on-screen subset — recomputed each refresh, reused by the blame rollup.
@@ -232,13 +236,14 @@ export function initGraph(opts: InitOptions): GraphController {
   const isHidden = (d: RNode): boolean =>
     hideBase(d) || (depthFocus !== null && d.height !== depthFocus);
 
-  // BFS the directed importer→imported edges to collect a node and its subtree.
-  function subtree(start: string): Set<string> {
+  // BFS a directed edge map from `start`, collecting it and everything reachable.
+  // `out` → the import subtree (descendants); `inn` → the supertree (ancestors).
+  function reachSet(start: string, edges: Map<string, Set<string>>): Set<string> {
     const seen = new Set<string>([start]);
     const stack = [start];
     while (stack.length) {
       const id = stack.pop()!;
-      for (const t of out.get(id) ?? [])
+      for (const t of edges.get(id) ?? [])
         if (!seen.has(t)) {
           seen.add(t);
           stack.push(t);
@@ -253,8 +258,8 @@ export function initGraph(opts: InitOptions): GraphController {
   function visibleLinks(): RLink[] {
     if (!current) return [];
     // Default (no focus, links off): draw nothing. With a focus, restrict to
-    // that node's subtree; with "show links" or "highlight links" on, every
-    // currently-shown edge.
+    // the focused set's internal edges; with "show links" or "highlight links"
+    // on, every currently-shown edge.
     if (!controls.showLinks && !controls.highlightLinks && focus === null) return [];
     const inFocus = focus?.set ?? null;
     return current.links.filter((l) => {
@@ -591,19 +596,25 @@ export function initGraph(opts: InitOptions): GraphController {
 
     adj = new Map(nodes.map((n) => [n.id, new Set<string>()]));
     out = new Map(nodes.map((n) => [n.id, new Set<string>()]));
+    inn = new Map(nodes.map((n) => [n.id, new Set<string>()]));
     for (const l of links) {
       const s = linkId(l.source);
       const t = linkId(l.target);
       adj.get(s)!.add(t);
       adj.get(t)!.add(s);
       out.get(s)!.add(t);
+      inn.get(t)!.add(s);
     }
 
     nodeSel
       .on("click", (e: MouseEvent, d) => {
         e.stopPropagation();
-        const already = focus !== null && focus.root === d.id;
-        focus = already ? null : { root: d.id, set: subtree(d.id) };
+        // Shift-click isolates the supertree (everything that depends on this
+        // node — what breaks if it changes); a plain click isolates the import
+        // subtree. Re-clicking the same node in the same direction clears it.
+        const dir = e.shiftKey ? "up" : "down";
+        const already = focus !== null && focus.root === d.id && focus.dir === dir;
+        focus = already ? null : { root: d.id, dir, set: reachSet(d.id, dir === "up" ? inn : out) };
         refresh();
       })
       .on("dblclick", (e: MouseEvent, d) => {

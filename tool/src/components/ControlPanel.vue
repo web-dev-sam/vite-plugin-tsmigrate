@@ -368,7 +368,8 @@ const scoreOpen = ref(true);
     </Section>
 
     <footer class="mt-4 border-t border-border/70 pt-4 text-xs text-muted">
-      drag to pan · scroll to zoom · hover a node · double-click for source
+      drag to pan · scroll to zoom · click a node for its subtree · shift-click for its dependents ·
+      double-click for source
     </footer>
   </aside>
 </template>
