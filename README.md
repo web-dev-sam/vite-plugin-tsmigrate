@@ -83,19 +83,25 @@ $$\mathrm{cost}(m) = \mathrm{loc}(m)\cdot\bigl(1 + \alpha\max(0, C_e^{w}(m){-}K)
 
 $$\text{score} = 100\cdot\frac{\sum_m \mathrm{loc}(m)}{\sum_m \mathrm{cost}(m)}$$
 
-where $C_e^{w}(m)=\sum_{d}I_0(d)$ is the **volatility-weighted** fan-out — each
-import counted by its target's instability, so pulling in a stable barrel like
-`@vben/icons` is nearly free while pulling in a churning module costs a full
-edge — and only weighted fan-out **above a healthy budget** $K$ costs
-comprehension (so ordinary modularity is free). $I = C_e^{w}/(C_e^{w}+C_a)$ is
-the instability (a change-likelihood proxy, so stable foundations aren't
-punished for being widely imported, and importing stable code doesn't make you
-look volatile), $r$ is the fraction of the codebase that transitively imports
-$m$ (cycles fold their whole LoC into every member), and $\mathrm{type}(m) =
-\gamma(1 + \delta\,r)$ for a file carrying type errors — so **type errors are a
-first-class term, weighted by how widely the red file is imported**. A clean,
-fully-typed, modular codebase approaches 100; the panel breaks the score into
-its drivers (excess coupling / change blast / type errors) plus the
+where:
+
+$$
+\begin{aligned}
+\alpha &= \text{excess-coupling weight (only weighted fan-out above the budget } K \text{ is charged)} \\
+\beta &= \text{change-blast weight} \\
+\gamma &= \text{type-error weight} \\
+\delta &= \text{type-error blast weight} \\
+K &= \text{healthy weighted fan-out budget (ordinary modularity is free)} \\
+C_e^{w}(m) &= \sum_{d} I_0(d) \quad \text{volatility-weighted fan-out: each import scaled by its target's instability} \\
+C_a(m) &= \text{fan-in: modules that import } m \\
+I(m) &= \frac{C_e^{w}(m)}{C_e^{w}(m) + C_a(m)} \quad \text{instability (change-likelihood proxy)} \\
+r(m) &= \text{fraction of the codebase that transitively imports } m \text{ (cycles fold in their whole LoC)} \\
+\mathrm{type}(m) &= \gamma\,(1 + \delta\,r) \text{ if } m \text{ carries type errors, else } 0
+\end{aligned}
+$$
+
+A clean, fully-typed, modular codebase approaches 100; the panel breaks the
+score into its drivers (excess coupling / change blast / type errors) plus the
 highest-cost hotspot files.
 
 The full model — every term, its rationale, the tunable constants, and the
