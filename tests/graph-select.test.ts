@@ -1,10 +1,5 @@
 import { expect, test } from "vite-plus/test";
-import {
-  buildAdjacency,
-  type Edge,
-  isolateSet,
-  reachSet,
-} from "../tool/src/graph/select.ts";
+import { buildAdjacency, type Edge, isolateSet, reachSet } from "../tool/src/graph/select.ts";
 import type { FileFacts } from "../src/analysis/topology.ts";
 import { makeGraph } from "../src/analysis/topology.ts";
 

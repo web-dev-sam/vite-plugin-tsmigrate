@@ -1,7 +1,6 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import type { ViteDevServer } from "vite";
 import type { AnalysisEngine } from "../analysis/engine.ts";
-import type { ResolvedOptions } from "../options.ts";
 import { collectDiagnostics } from "./diagnostics.ts";
 import { type ContentSearch, readProjectFile } from "./vite-adapter.ts";
 
@@ -17,14 +16,13 @@ export type ApiHandler = (req: IncomingMessage, res: ServerResponse) => Promise<
 export function createApiHandler(
   server: ViteDevServer,
   engine: AnalysisEngine,
-  options: ResolvedOptions,
   search: ContentSearch,
 ): ApiHandler {
   return async (req, res) => {
     const url = new URL(req.url ?? "/", "http://tool.local");
 
     if (url.pathname === "/api/diagnostics") {
-      sendJson(res, collectDiagnostics(server, options, search.available));
+      sendJson(res, collectDiagnostics(server, search.available));
       return true;
     }
 

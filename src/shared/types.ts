@@ -154,7 +154,6 @@ export type GraphResponse = ComponentGraph | GraphUnchanged;
 
 /** Payload of `GET /api/diagnostics`. */
 export interface Diagnostics {
-  greeting: string;
   appUrl: string | null;
   root: string;
   /** Vue version resolved from the user's app, or `null` when not found. */

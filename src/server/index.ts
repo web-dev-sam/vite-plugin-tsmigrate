@@ -60,7 +60,7 @@ export async function startToolServer(
   handlers?.engine.dispose();
   handlers = {
     engine,
-    handleApi: createApiHandler(server, engine, options, search),
+    handleApi: createApiHandler(server, engine, search),
     serveClient: clientDir ? createClientHandler(clientDir) : null,
   };
 

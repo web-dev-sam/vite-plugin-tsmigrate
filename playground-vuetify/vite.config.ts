@@ -28,7 +28,6 @@ export default defineConfig({
       // Dev harness (scripts/dev.mjs) pins the tool server's port so the tool
       // UI's proxy always targets this exact backend; falls back to the default.
       toolPort: Number(process.env.TSMIGRATE_PORT) || undefined,
-      greeting: "Analyzing Vuetify (Vue 3 + TypeScript component library)",
       // Real type-checking drives node coloring: run Vuetify's own `vue-tsc`
       // over `packages/vuetify`. Its committed ambient `.d.ts` shim sass and
       // globals like `__VUETIFY_VERSION__`, so the pass is accurate (not

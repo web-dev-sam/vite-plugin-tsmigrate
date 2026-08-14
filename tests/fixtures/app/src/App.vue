@@ -1,11 +1,10 @@
 <script setup lang="ts">
-import { greeting } from "virtual:tsmigrate";
 import Counter from "./components/Counter.vue";
 </script>
 
 <template>
   <main>
-    <h1>{{ greeting }}</h1>
+    <h1>vite-plugin-tsmigrate</h1>
     <p>A Vue 3 counter served by Vite 8 with <code>vite-plugin-tsmigrate</code>.</p>
     <Counter />
   </main>

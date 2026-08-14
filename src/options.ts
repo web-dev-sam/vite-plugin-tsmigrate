@@ -5,16 +5,7 @@ import { DEFAULT_TOOL_PORT } from "./constants.ts";
  */
 export interface TsMigrateOptions {
   /**
-   * Message exposed by the `virtual:tsmigrate` module, shown in the tool UI,
-   * and logged when the Vite config is resolved.
-   *
-   * @default "Hello, Vite 8!"
-   */
-  greeting?: string;
-
-  /**
-   * Log through Vite's logger: the greeting once the config is resolved, and
-   * the tool URL once the dev server is listening.
+   * Log the tool URL through Vite's logger once the dev server is listening.
    *
    * @default true
    */
@@ -67,12 +58,11 @@ export type ResolvedOptions = Required<TsMigrateOptions>;
 
 export function resolveOptions(options: TsMigrateOptions): ResolvedOptions {
   const {
-    greeting = "Hello, Vite 8!",
     logOnStart = true,
     toolPort = DEFAULT_TOOL_PORT,
     typeCheckCommand = ["vue-tsc", "--noEmit", "--pretty", "false"],
     blame = false,
     blameAliases = {},
   } = options;
-  return { greeting, logOnStart, toolPort, typeCheckCommand, blame, blameAliases };
+  return { logOnStart, toolPort, typeCheckCommand, blame, blameAliases };
 }

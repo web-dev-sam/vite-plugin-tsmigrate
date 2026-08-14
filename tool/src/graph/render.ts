@@ -42,6 +42,40 @@ const RING = 150;
 /** Pre-tick count that settles the layout before the first paint. */
 const PRETICKS = 340;
 
+/**
+ * Compute the zoom transform that fits the bounding box of `pts` into a
+ * `vw`×`vh` viewport (with `pad` user-units of margin).
+ *
+ * With no points there is no box to fit: `Math.min`/`Math.max` over empty
+ * arrays return `+Infinity`/`-Infinity`, the derived centre is `NaN`, and the
+ * scale collapses to `0` — which serialises to the invalid
+ * `translate(NaN,NaN) scale(0)` and makes the browser reject the `<g>`
+ * transform. Fall back to the identity transform in that case.
+ */
+export function fitTransform(
+  pts: ReadonlyArray<{ x?: number; y?: number }>,
+  vw: number,
+  vh: number,
+  pad = 50,
+): d3.ZoomTransform {
+  if (!pts.length) return d3.zoomIdentity;
+  const xs = pts.map((p) => p.x!);
+  const ys = pts.map((p) => p.y!);
+  const minX = Math.min(...xs),
+    maxX = Math.max(...xs);
+  const minY = Math.min(...ys),
+    maxY = Math.max(...ys);
+  const w = maxX - minX || 1;
+  const h = maxY - minY || 1;
+  const k = Math.min(vw / (w + 2 * pad), vh / (h + 2 * pad));
+  const cx = (minX + maxX) / 2;
+  const cy = (minY + maxY) / 2;
+  return d3.zoomIdentity
+    .translate(vw / 2, vh / 2)
+    .scale(k)
+    .translate(-cx, -cy);
+}
+
 export type Mode = "strict" | "naive";
 
 /** The persistent view controls Vue mirrors into the scene. */
@@ -625,24 +659,9 @@ export function initGraph(opts: InitOptions): GraphController {
     for (let i = 0; i < PRETICKS; i++) sim.tick();
     tick();
 
-    // Fit the settled bounding box into the viewport.
-    const xs = nodes.map((n) => n.x!);
-    const ys = nodes.map((n) => n.y!);
-    const minX = Math.min(...xs),
-      maxX = Math.max(...xs);
-    const minY = Math.min(...ys),
-      maxY = Math.max(...ys);
-    const w = maxX - minX || 1;
-    const h = maxY - minY || 1;
-    const pad = 50;
-    const k = Math.min(width() / (w + 2 * pad), height() / (h + 2 * pad));
-    const cx = (minX + maxX) / 2;
-    const cy = (minY + maxY) / 2;
-    const fitTransform = d3.zoomIdentity
-      .translate(width() / 2, height() / 2)
-      .scale(k)
-      .translate(-cx, -cy);
-    svg.call((s) => zoom.transform(s, fitTransform));
+    // Fit the settled bounding box into the viewport (empty graph => identity).
+    const fit = fitTransform(nodes, width(), height());
+    svg.call((s) => zoom.transform(s, fit));
 
     ga = buildAdjacency(
       nodes.map((n) => n.id),

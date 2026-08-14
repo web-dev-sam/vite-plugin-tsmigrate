@@ -3,12 +3,7 @@ import { createServer as createHttpServer } from "node:http";
 import { fileURLToPath } from "node:url";
 import { createLogger, createServer } from "vite";
 import { expect, test } from "vite-plus/test";
-import {
-  type ComponentGraph,
-  type Diagnostics,
-  tsmigrate,
-  VIRTUAL_MODULE_ID,
-} from "../src/index.ts";
+import { type ComponentGraph, type Diagnostics, tsmigrate } from "../src/index.ts";
 import { listenTool, stopToolServer } from "../src/server/index.ts";
 
 function captureLogger(messages: string[]) {
@@ -21,36 +16,6 @@ function captureLogger(messages: string[]) {
 
 test("returns a plugin using the conventional vite-plugin-* name", () => {
   expect(tsmigrate().name).toBe("vite-plugin-tsmigrate");
-});
-
-test("serves the greeting through the virtual module in a real Vite server", async () => {
-  const server = await createServer({
-    configFile: false,
-    logLevel: "silent",
-    plugins: [tsmigrate({ greeting: "Hi from tests", logOnStart: false, toolPort: 0 })],
-  });
-
-  try {
-    const result = await server.transformRequest(VIRTUAL_MODULE_ID);
-    expect(result?.code).toContain("Hi from tests");
-  } finally {
-    await server.close();
-  }
-});
-
-test("falls back to the default greeting when no options are given", async () => {
-  const server = await createServer({
-    configFile: false,
-    logLevel: "silent",
-    plugins: [tsmigrate({ logOnStart: false, toolPort: 0 })],
-  });
-
-  try {
-    const result = await server.transformRequest(VIRTUAL_MODULE_ID);
-    expect(result?.code).toContain("Hello, Vite 8!");
-  } finally {
-    await server.close();
-  }
 });
 
 test("analyses the playground app and serves the component graph", async () => {
@@ -90,7 +55,6 @@ test("analyses the playground app and serves the component graph", async () => {
   const diagRes = await fetch(new URL("/api/diagnostics", toolUrl));
   expect(diagRes.status).toBe(200);
   const diag = (await diagRes.json()) as Diagnostics;
-  expect(diag.greeting).toBe("Hello, Vite 8!");
   // Vue version is resolved from the app when present; the hermetic fixture
   // has no local vue install, so it may be null — accept either.
   expect(diag.vueVersion === null || typeof diag.vueVersion === "string").toBe(true);

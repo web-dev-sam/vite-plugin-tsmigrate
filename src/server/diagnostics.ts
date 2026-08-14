@@ -1,15 +1,10 @@
 import { createRequire } from "node:module";
 import { join, relative } from "node:path";
 import type { ViteDevServer } from "vite";
-import type { ResolvedOptions } from "../options.ts";
 import type { Diagnostics } from "../shared/types.ts";
 
 /** Quick environment summary shown in the tool header. */
-export function collectDiagnostics(
-  server: ViteDevServer,
-  options: ResolvedOptions,
-  ripgrep: boolean,
-): Diagnostics {
+export function collectDiagnostics(server: ViteDevServer, ripgrep: boolean): Diagnostics {
   const root = server.config.root;
 
   let vueVersion: string | null = null;
@@ -29,7 +24,6 @@ export function collectDiagnostics(
     .sort();
 
   return {
-    greeting: options.greeting,
     appUrl: server.resolvedUrls?.local[0] ?? null,
     root,
     vueVersion,
