@@ -165,6 +165,7 @@ onUnmounted(() => {
     :controls="controls"
     :driver="activeDriver"
     :contributions="graph?.maintainability.contributions ?? null"
+    :breakdown="graph?.maintainability.breakdown ?? null"
     @readouts="readouts = $event"
     @open-source="source = $event"
   />

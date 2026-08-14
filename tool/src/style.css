@@ -58,6 +58,10 @@
   stroke-opacity: 0.5;
 }
 
+.link.type {
+  stroke-dasharray: 4 3;
+}
+
 .link.hl {
   stroke: #58a6ff;
   stroke-opacity: 0.95;

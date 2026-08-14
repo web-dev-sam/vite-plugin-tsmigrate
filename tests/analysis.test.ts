@@ -41,7 +41,10 @@ const BLAME_FIXTURE = [
   "\tline three",
 ].join("\n");
 
-function fakeHost(exec?: AnalysisHost["exec"]): AnalysisHost {
+function fakeHost(
+  exec?: AnalysisHost["exec"],
+  files: Record<string, string> = FILES,
+): AnalysisHost {
   return {
     root: ROOT,
     configuredEntries: () => [],
@@ -56,14 +59,14 @@ function fakeHost(exec?: AnalysisHost["exec"]): AnalysisHost {
         return null; // bare specifier (npm package) — external
       }
       for (const candidate of [base, `${base}.ts`, join(base, "index.ts")]) {
-        if (candidate in FILES) {
+        if (candidate in files) {
           return candidate;
         }
       }
       return null;
     },
     async readFile(path) {
-      return FILES[path] ?? null;
+      return files[path] ?? null;
     },
     async runGit(args) {
       if (args[0] === "rev-parse") {
@@ -96,6 +99,33 @@ test("crawls components and collapses barrels into direct edges", async () => {
     to: "/app/src/components/Deep.vue",
   });
   expect(edges).toHaveLength(2);
+});
+
+test("type-only imports produce dashed (type) edges; value/mixed do not", async () => {
+  const files: Record<string, string> = {
+    "/app/src/main.ts": 'import App from "./App.vue";\n',
+    "/app/src/App.vue":
+      '<script setup lang="ts">\n' +
+      'import Val from "./Val.vue";\n' + // value → solid
+      'import type { P } from "./Typ.vue";\n' + // type-only → dashed
+      'import Mix, { type Only } from "./Mix.vue";\n' + // mixed (Mix is a value) → solid
+      "</script>\n<template><Val /></template>\n",
+    "/app/src/Val.vue": "<template><p>v</p></template>\n",
+    "/app/src/Typ.vue": "<template><p>t</p></template>\n",
+    "/app/src/Mix.vue": "<template><p>m</p></template>\n",
+  };
+  const { edges, rawEdges } = await crawlGraph(fakeHost(undefined, files), ["/app/src/main.ts"]);
+
+  // Only the `import type` edge carries `type: true` (rendered dashed).
+  expect(edges).toContainEqual({ from: "/app/src/App.vue", to: "/app/src/Typ.vue", type: true });
+  expect(edges).toContainEqual({ from: "/app/src/App.vue", to: "/app/src/Val.vue" });
+  expect(edges).toContainEqual({ from: "/app/src/App.vue", to: "/app/src/Mix.vue" });
+  // The type edge is not a plain value edge — the flag must be present.
+  expect(edges).not.toContainEqual({ from: "/app/src/App.vue", to: "/app/src/Typ.vue" });
+
+  // Same classification in the raw full-module graph; a value import is solid.
+  expect(rawEdges).toContainEqual({ from: "/app/src/App.vue", to: "/app/src/Typ.vue", type: true });
+  expect(rawEdges).toContainEqual({ from: "/app/src/main.ts", to: "/app/src/App.vue" });
 });
 
 // Vue 2 support: options-API SFCs use a plain `<script>` (no `setup`) and a
@@ -497,7 +527,15 @@ test("topology computes heights, strict-red propagation, and groups", () => {
     [B, fact(0)],
     [C, fact(2)],
   ]);
-  const graph = makeGraph(new Set(ids), children, facts, "/r");
+  const graph = makeGraph(
+    new Set(ids),
+    [
+      { from: A, to: B },
+      { from: B, to: C },
+    ],
+    facts,
+    "/r",
+  );
   const byId = new Map(graph.nodes.map((node) => [node.id, node]));
   expect(byId.get(C)?.strictRed).toBe(true);
   expect(byId.get(B)?.strictRed).toBe(true);
@@ -639,16 +677,12 @@ function facts(
   return map;
 }
 function graphOf(edges: [string, string][], f: Map<string, FileFacts>): Graph {
-  const children = new Map<string, Set<string>>();
-  for (const [from, to] of edges) {
-    let kids = children.get(from);
-    if (!kids) {
-      kids = new Set();
-      children.set(from, kids);
-    }
-    kids.add(to);
-  }
-  return makeGraph(new Set(f.keys()), children, f, "/r");
+  return makeGraph(
+    new Set(f.keys()),
+    edges.map(([from, to]) => ({ from, to })),
+    f,
+    "/r",
+  );
 }
 
 test("hotspots surface the biggest score-draggers first, not the biggest files", () => {
@@ -811,6 +845,70 @@ test("complexity amplifies a file's flaw cost but never punishes on its own", ()
   );
   expect(flawlessComplex.score).toBe(flawlessSimple.score);
   expect(flawlessComplex.complexityAmplification).toBe(0);
+});
+
+test("per-file breakdown carries the ingredients the alt-hover detail shows", () => {
+  //  A ─┐
+  //     ├─> B ─> C ─> E     (E is a clean floor leaf: imported, imports nothing)
+  //  D ─┘
+  // B is imported by A and D (blast radius), imports the volatile C, and is
+  // itself red and branch-dense — so its cost splits across blast + types,
+  // amplified by complexity.
+  const g = graphOf(
+    [
+      ["/r/A.ts", "/r/B.ts"],
+      ["/r/D.ts", "/r/B.ts"],
+      ["/r/B.ts", "/r/C.ts"],
+      ["/r/C.ts", "/r/E.ts"],
+    ],
+    facts({
+      "/r/A.ts": {},
+      "/r/B.ts": { loc: 10, te: 1, cc: 6 },
+      "/r/C.ts": {},
+      "/r/D.ts": {},
+      "/r/E.ts": {},
+    }),
+  );
+  const m = scoreMaintainability(g);
+  const b = m.breakdown["/r/B.ts"]!;
+  expect(b).toBeDefined();
+  // Structural ingredients the contributor lists are built from.
+  expect(b.weightedFanout).toBe(0.5); // one volatile import (C), i0 = 0.5
+  expect(b.instability).toBe(0.2); // 0.5 / (0.5 + 2 importers)
+  expect(b.blastRadius).toBe(0.4); // A + D (20 LoC) of 50 total
+  // Cost splits across blast + types, amplified by complexity; no excess coupling.
+  expect(b.comprehension).toBe(0);
+  expect(b.blast).toBeGreaterThan(0);
+  expect(b.types).toBeGreaterThan(0);
+  expect(b.cxWeight).toBe(2.33); // density 0.6 → 1 + 2·(0.6/0.9)
+  // A file at its own floor carries no overhead and is omitted.
+  expect(m.breakdown["/r/E.ts"]).toBeUndefined();
+  // The breakdown agrees with the hotspot row for the same file.
+  const hot = m.hotspots.find((h) => h.id === "/r/B.ts")!;
+  expect(b.instability).toBe(Math.round(hot.instability * 1000) / 1000);
+  expect(b.blastRadius).toBe(Math.round(hot.blastRadius * 1000) / 1000);
+});
+
+test("excess coupling in the breakdown counts only volatile imports", () => {
+  // `core` imports 15 modules that each import two shared leaves, so every
+  // import is volatile (i0 = 2/3) and the weighted fan-out clears the budget.
+  const edges: [string, string][] = [];
+  const spec: Record<string, { loc?: number; cc?: number }> = {
+    "/r/core.ts": { loc: 100, cc: 10 },
+    "/r/La.ts": {},
+    "/r/Lb.ts": {},
+  };
+  for (let k = 0; k < 15; k++) {
+    const mod = `/r/m${k}.ts`;
+    spec[mod] = {};
+    edges.push(["/r/core.ts", mod], [mod, "/r/La.ts"], [mod, "/r/Lb.ts"]);
+  }
+  const b = scoreMaintainability(graphOf(edges, facts(spec))).breakdown["/r/core.ts"]!;
+  expect(b.comprehension).toBeGreaterThan(0);
+  // 15 imports × i0(2/3) ≈ 10 weighted edges — above the healthy budget of 8.
+  expect(b.weightedFanout).toBeGreaterThan(8);
+  // Density 10/100 = 0.1 → the flaw cost is amplified ×1.5.
+  expect(b.cxWeight).toBe(1.5);
 });
 
 test("maintainability penalises adding a cycle to an acyclic chain", () => {

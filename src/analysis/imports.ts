@@ -23,6 +23,8 @@ export interface ImportBinding {
   imported: ImportedName;
   /** Local name, used to trace binding re-exports (`import X; export { X }`). */
   local: string | null;
+  /** TypeScript type-only binding (`import type {X}` or `import {type X}`). */
+  isType: boolean;
 }
 
 /** One `import ... from "source"` statement. `bindings` empty = side-effect import. */
@@ -34,11 +36,11 @@ export interface ImportRef {
 /** One export binding, normalised across the ESM re-export forms. */
 export type ExportRef =
   // `export { imported as exportName } from "source"` (incl. `default as X`).
-  | { kind: "reexport"; exportName: string; importName: string; source: string }
+  | { kind: "reexport"; exportName: string; importName: string; source: string; isType: boolean }
   // `export * from "source"` — forwards every named (non-default) export.
-  | { kind: "star"; source: string }
+  | { kind: "star"; source: string; isType: boolean }
   // `export * as exportName from "source"` — a namespace-object export.
-  | { kind: "ns"; exportName: string; source: string }
+  | { kind: "ns"; exportName: string; source: string; isType: boolean }
   // `export const x`, `export function x`, `export default …`, `export { local }`.
   | { kind: "local"; exportName: string; local: string | null };
 
@@ -204,6 +206,7 @@ export function parseModule(code: string, filename: string): ModuleRecord {
             : e.importName.kind === "NamespaceObject"
               ? { kind: "namespace" }
               : { kind: "named", name: e.importName.name ?? "" },
+        isType: e.isType,
       }));
       imports.push({ source: imp.moduleRequest.value, bindings });
     }
@@ -212,15 +215,21 @@ export function parseModule(code: string, filename: string): ModuleRecord {
         const source = e.moduleRequest?.value;
         if (source) {
           if (e.importName.kind === "AllButDefault") {
-            exports.push({ kind: "star", source });
+            exports.push({ kind: "star", source, isType: e.isType });
           } else if (e.importName.kind === "All") {
-            exports.push({ kind: "ns", exportName: exportNameOf(e.exportName), source });
+            exports.push({
+              kind: "ns",
+              exportName: exportNameOf(e.exportName),
+              source,
+              isType: e.isType,
+            });
           } else if (e.importName.kind === "Name") {
             exports.push({
               kind: "reexport",
               exportName: exportNameOf(e.exportName),
               importName: e.importName.name ?? "",
               source,
+              isType: e.isType,
             });
           }
         } else {

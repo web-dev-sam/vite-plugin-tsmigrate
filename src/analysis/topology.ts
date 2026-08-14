@@ -98,7 +98,7 @@ export function groupOf(id: string, root: string): string {
  */
 export function makeGraph(
   idSet: Set<string>,
-  childrenAll: Map<string, Set<string>>,
+  edges: ComponentEdge[],
   facts: Map<string, FileFacts>,
   root: string,
 ): Graph {
@@ -109,13 +109,24 @@ export function makeGraph(
     children.set(id, new Set());
     parents.set(id, new Set());
   }
-  for (const id of ids) {
-    for (const kid of childrenAll.get(id) ?? []) {
-      if (!idSet.has(kid)) {
-        continue;
-      }
-      children.get(id)?.add(kid);
-      parents.get(kid)?.add(id);
+  // Induced edges: keep only those with both endpoints in the set, deduped by
+  // (from,to). An edge stays type-only only if every occurrence of it is — a
+  // single value import downgrades it.
+  const induced: ComponentEdge[] = [];
+  const indexOf = new Map<string, number>();
+  for (const e of edges) {
+    if (e.from === e.to || !idSet.has(e.from) || !idSet.has(e.to)) {
+      continue;
+    }
+    children.get(e.from)!.add(e.to);
+    parents.get(e.to)!.add(e.from);
+    const key = `${e.from}\n${e.to}`;
+    const at = indexOf.get(key);
+    if (at === undefined) {
+      indexOf.set(key, induced.length);
+      induced.push(e.type ? { from: e.from, to: e.to, type: true } : { from: e.from, to: e.to });
+    } else if (!e.type && induced[at].type) {
+      induced[at] = { from: e.from, to: e.to };
     }
   }
 
@@ -160,13 +171,6 @@ export function makeGraph(
     };
   });
 
-  const edges: ComponentEdge[] = [];
-  for (const [from, kids] of children) {
-    for (const to of kids) {
-      edges.push({ from, to });
-    }
-  }
-
   const maxHeight = nodes.reduce((max, node) => Math.max(max, node.height), 0);
-  return { nodes, edges, maxHeight };
+  return { nodes, edges: induced, maxHeight };
 }

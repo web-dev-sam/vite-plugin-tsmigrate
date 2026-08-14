@@ -1,7 +1,13 @@
 import { dirname, extname, join, sep } from "node:path";
 import type { ComponentEdge } from "../shared/types.ts";
 import type { AnalysisHost } from "./host.ts";
-import { extractSfcScripts, type ImportedName, type ModuleRecord, parseModule } from "./imports.ts";
+import {
+  extractSfcScripts,
+  type ImportedName,
+  type ImportRef,
+  type ModuleRecord,
+  parseModule,
+} from "./imports.ts";
 
 const SCRIPT_EXTS: Record<string, true> = {
   ".ts": true,
@@ -350,14 +356,30 @@ export async function crawlGraph(host: AnalysisHost, entries: string[]): Promise
   // dynamic imports and glob matches) to the components they resolve to.
   const edges: ComponentEdge[] = [];
   const seenEdges = new Set<string>();
-  const addEdge = (from: string, to: string): void => {
+  // An import statement is type-only when it has bindings and every one is a TS
+  // type import; a side-effect import (no bindings) is a value dependency.
+  const importIsTypeOnly = (imp: ImportRef): boolean =>
+    imp.bindings.length > 0 && imp.bindings.every((b) => b.isType);
+  // Accumulate per-target reachability into `acc` (true = type-only so far). A
+  // value contribution is sticky: an edge is type-only only when every specifier
+  // that reaches the target is a type import.
+  const contribute = (
+    acc: Map<string, boolean>,
+    to: string | Iterable<string>,
+    typeOnly: boolean,
+  ): void => {
+    for (const id of typeof to === "string" ? [to] : to) {
+      acc.set(id, typeOnly && (acc.get(id) ?? true));
+    }
+  };
+  const addEdge = (from: string, to: string, typeOnly: boolean): void => {
     if (to === from) {
       return;
     }
     const key = `${from}\n${to}`;
     if (!seenEdges.has(key)) {
       seenEdges.add(key);
-      edges.push({ from, to });
+      edges.push(typeOnly ? { from, to, type: true } : { from, to });
     }
   };
 
@@ -367,18 +389,12 @@ export async function crawlGraph(host: AnalysisHost, entries: string[]): Promise
       continue;
     }
     const seen = new Set<string>();
-    const out = new Set<string>();
-    const wholeModule = (t: string | null): void => {
+    const out = new Map<string, boolean>();
+    const wholeModule = (t: string | null, typeOnly: boolean): void => {
       if (!t) {
         return;
       }
-      if (isVue(t)) {
-        out.add(t);
-      } else {
-        for (const v of resolveModule(t, seen)) {
-          out.add(v);
-        }
-      }
+      contribute(out, isVue(t) ? t : resolveModule(t, seen), typeOnly);
     };
     for (const imp of rec.imports) {
       const t = target(from, imp.source);
@@ -387,22 +403,16 @@ export async function crawlGraph(host: AnalysisHost, entries: string[]): Promise
       }
       if (isVue(t)) {
         // Importing anything from a component is a dependency on it.
-        out.add(t);
+        contribute(out, t, importIsTypeOnly(imp));
         continue;
       }
       for (const b of imp.bindings) {
         if (b.imported.kind === "namespace") {
-          for (const v of resolveModule(t, seen)) {
-            out.add(v);
-          }
+          contribute(out, resolveModule(t, seen), b.isType);
         } else if (b.imported.kind === "default") {
-          for (const v of resolveExport(t, "default", seen)) {
-            out.add(v);
-          }
+          contribute(out, resolveExport(t, "default", seen), b.isType);
         } else {
-          for (const v of resolveExport(t, b.imported.name, seen)) {
-            out.add(v);
-          }
+          contribute(out, resolveExport(t, b.imported.name, seen), b.isType);
         }
       }
     }
@@ -410,24 +420,22 @@ export async function crawlGraph(host: AnalysisHost, entries: string[]): Promise
       if (exp.kind === "reexport") {
         const t = target(from, exp.source);
         if (t && isVue(t)) {
-          out.add(t);
+          contribute(out, t, exp.isType);
         } else if (t) {
-          for (const v of resolveExport(t, exp.importName, seen)) {
-            out.add(v);
-          }
+          contribute(out, resolveExport(t, exp.importName, seen), exp.isType);
         }
       } else if (exp.kind === "ns" || exp.kind === "star") {
-        wholeModule(target(from, exp.source));
+        wholeModule(target(from, exp.source), exp.isType);
       }
     }
     for (const spec of rec.dynamic) {
-      wholeModule(target(from, spec));
+      wholeModule(target(from, spec), false);
     }
     for (const hit of globHitsOf.get(from) ?? []) {
-      wholeModule(hit);
+      wholeModule(hit, false);
     }
-    for (const to of out) {
-      addEdge(from, to);
+    for (const [to, typeOnly] of out) {
+      addEdge(from, to, typeOnly);
     }
   }
 
@@ -435,19 +443,33 @@ export async function crawlGraph(host: AnalysisHost, entries: string[]): Promise
   // importer→imported edges among them (no barrel collapsing).
   const files: CrawlFile[] = [];
   const rawEdges: ComponentEdge[] = [];
-  const seenRaw = new Set<string>();
   for (const from of [...directImports.keys()].sort()) {
     files.push({ id: from, kind: from.endsWith(".vue") ? "vue" : "ts" });
+    // Classify each raw importer→imported edge: type-only when every specifier
+    // resolving to the target is a type import (dynamic/glob are runtime).
+    const rec = records.get(from);
+    const contrib = new Map<string, boolean>();
+    if (rec) {
+      for (const imp of rec.imports) {
+        contribute(contrib, target(from, imp.source) ?? [], importIsTypeOnly(imp));
+      }
+      for (const exp of rec.exports) {
+        if ("source" in exp) {
+          contribute(contrib, target(from, exp.source) ?? [], exp.isType);
+        }
+      }
+      for (const spec of rec.dynamic) {
+        contribute(contrib, target(from, spec) ?? [], false);
+      }
+      contribute(contrib, globHitsOf.get(from) ?? [], false);
+    }
+    const seenRaw = new Set<string>();
     for (const to of directImports.get(from) ?? []) {
-      if (to === from) {
+      if (to === from || seenRaw.has(to)) {
         continue;
       }
-      const key = `${from}\n${to}`;
-      if (seenRaw.has(key)) {
-        continue;
-      }
-      seenRaw.add(key);
-      rawEdges.push({ from, to });
+      seenRaw.add(to);
+      rawEdges.push(contrib.get(to) === true ? { from, to, type: true } : { from, to });
     }
   }
 

@@ -137,8 +137,8 @@ export class AnalysisEngine {
 
     const vueIds = new Set(this.vueNodes);
     const fullIds = new Set(this.files.map((file) => file.id));
-    const vue = makeGraph(vueIds, adjacency(this.collapsedEdges), facts, this.host.root);
-    const full = makeGraph(fullIds, adjacency(this.rawEdges), facts, this.host.root);
+    const vue = makeGraph(vueIds, this.collapsedEdges, facts, this.host.root);
+    const full = makeGraph(fullIds, this.rawEdges, facts, this.host.root);
 
     return {
       version: this._version,
@@ -302,18 +302,4 @@ export class AnalysisEngine {
       });
     }
   }
-}
-
-/** Adjacency map (parent → children) from an edge list. */
-function adjacency(edges: ComponentEdge[]): Map<string, Set<string>> {
-  const children = new Map<string, Set<string>>();
-  for (const { from, to } of edges) {
-    let kids = children.get(from);
-    if (!kids) {
-      kids = new Set();
-      children.set(from, kids);
-    }
-    kids.add(to);
-  }
-  return children;
 }

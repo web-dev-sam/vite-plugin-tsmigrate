@@ -2,6 +2,7 @@
 import { onMounted, onUnmounted, ref, watch } from "vue";
 import type {
   Graph,
+  MaintainabilityBreakdown,
   MaintainabilityContributions,
   MaintainabilityDriver,
 } from "../../../src/shared/types.ts";
@@ -17,6 +18,7 @@ const props = defineProps<{
   controls: Controls;
   driver: MaintainabilityDriver | null;
   contributions: MaintainabilityContributions | null;
+  breakdown: Record<string, MaintainabilityBreakdown> | null;
 }>();
 const emit = defineEmits<{
   readouts: [Readouts];
@@ -39,6 +41,7 @@ onMounted(() => {
   controller.setControls(props.controls);
   controller.setGraph(props.graph);
   controller.setDriverHighlight(props.driver, props.contributions);
+  controller.setBreakdown(props.breakdown);
 });
 
 // A new graph reference means a vue↔full swap or fresh server data.
@@ -54,6 +57,10 @@ watch(
 watch(
   () => [props.driver, props.contributions],
   () => controller?.setDriverHighlight(props.driver, props.contributions),
+);
+watch(
+  () => props.breakdown,
+  (b) => controller?.setBreakdown(b),
 );
 
 onUnmounted(() => controller?.destroy());

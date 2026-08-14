@@ -123,12 +123,11 @@ test("isolate obeys the depth contract on real makeGraph output", () => {
   const PAGE = "/r/src/Page.vue";
   const WIDGET = "/r/src/Widget.vue";
   const BUTTON = "/r/src/Button.vue";
-  const children = new Map<string, Set<string>>([
-    [APP, new Set([PAGE])],
-    [PAGE, new Set([WIDGET])],
-    [WIDGET, new Set([BUTTON])],
-    [BUTTON, new Set()],
-  ]);
+  const edges = [
+    { from: APP, to: PAGE },
+    { from: PAGE, to: WIDGET },
+    { from: WIDGET, to: BUTTON },
+  ];
   const fact = (): FileFacts => ({
     kind: "vue",
     loc: 1,
@@ -139,7 +138,7 @@ test("isolate obeys the depth contract on real makeGraph output", () => {
     errors: {},
   });
   const facts = new Map([APP, PAGE, WIDGET, BUTTON].map((id) => [id, fact()]));
-  const graph = makeGraph(new Set([APP, PAGE, WIDGET, BUTTON]), children, facts, "/r");
+  const graph = makeGraph(new Set([APP, PAGE, WIDGET, BUTTON]), edges, facts, "/r");
 
   const depth = new Map(graph.nodes.map((n) => [n.id, n.height]));
   // Sanity: the entry sits at the top, the leaf at depth 0.

@@ -2,6 +2,7 @@ import * as d3 from "d3";
 import type {
   ComponentNode,
   Graph,
+  MaintainabilityBreakdown,
   MaintainabilityContributions,
   MaintainabilityDriver,
 } from "../../../src/shared/types.ts";
@@ -33,8 +34,12 @@ const DRIVER_COLOR: Record<MaintainabilityDriver, string> = {
   blast: "#a371f7",
   types: RED,
 };
-// Ring radius past the node edge (user units) and the min intensity worth drawing.
-const HALO_OFFSET = 2.5;
+// Complexity-load accent (amber), matching the panel's λ readout.
+const COMPLEXITY_COLOR = "#d29922";
+// Driver-highlight ring geometry (user units): how far the ring extends past the
+// node edge, its stroke thickness, and the min contribution worth drawing.
+const HALO_OFFSET = 6;
+const HALO_STROKE = 2;
 const HALO_EPS = 0.03;
 
 const TAU = 2 * Math.PI;
@@ -175,6 +180,8 @@ export interface GraphController {
     driver: MaintainabilityDriver | null,
     contributions: MaintainabilityContributions | null,
   ): void;
+  /** Update the per-node change-cost breakdown for the alt-hover detail view. */
+  setBreakdown(breakdown: Record<string, MaintainabilityBreakdown> | null): void;
   /** Tear down the simulation, listeners and DOM. */
   destroy(): void;
 }
@@ -189,6 +196,8 @@ interface RNode extends d3.SimulationNodeDatum {
   kind: "vue" | "ts";
   /** Lines of code (prototype `size`). */
   size: number;
+  /** Cyclomatic complexity — decision points in the file's script. */
+  cc: number;
   /** Own type-error count (prototype `errors`). */
   errors: number;
   strictRed: boolean;
@@ -204,6 +213,8 @@ interface RNode extends d3.SimulationNodeDatum {
 interface RLink extends d3.SimulationLinkDatum<RNode> {
   source: string | RNode;
   target: string | RNode;
+  /** Type-only import edge — rendered dashed. */
+  type: boolean;
 }
 
 const esc = (s: unknown): string =>
@@ -218,6 +229,7 @@ function toRNode(n: ComponentNode): RNode {
     group: n.group,
     kind: n.kind,
     size: n.loc ?? 1,
+    cc: n.cc ?? 0,
     errors: n.typeErrors ?? 0,
     strictRed: n.strictRed,
     analyzing: n.typeErrors === null && n.status.typecheck !== "ready",
@@ -276,6 +288,13 @@ export function initGraph(opts: InitOptions): GraphController {
   let haloSel: d3.Selection<SVGCircleElement, RNode, SVGGElement, unknown> | null = null;
   let driver: MaintainabilityDriver | null = null;
   let contrib: MaintainabilityContributions | null = null;
+  // Per-node change-cost breakdown for the alt-hover detail tooltip (null until
+  // the score arrives), an id→node map for contributor lookups, and the current
+  // hover target + whether its detail view is showing.
+  let breakdown: Record<string, MaintainabilityBreakdown> | null = null;
+  let byId = new Map<string, RNode>();
+  let hovered: RNode | null = null;
+  let hoverDetail = false;
 
   // Click-to-isolate: ids reachable from the focused node. `dir` picks the walk
   // — "down" = its import subtree (what it uses), "up" = its supertree (what
@@ -322,7 +341,7 @@ export function initGraph(opts: InitOptions): GraphController {
       .selectAll<SVGLineElement, RLink>("line")
       .data(visibleLinks(), (l) => `${linkId(l.source)}\n${linkId(l.target)}`)
       .join("line")
-      .attr("class", linkClass());
+      .attr("class", (l) => linkClass(l));
     // Position each edge; x/y attrs land on the same selection.
     linkSel
       .attr("x1", (d) => (d.source as RNode).x!)
@@ -332,12 +351,22 @@ export function initGraph(opts: InitOptions): GraphController {
   }
 
   // Base class for the link overlay: hover-blue when "highlight links" is on,
-  // otherwise the muted default. Hover then toggles `.hl`/`.dim` on top.
-  function linkClass(): string {
-    return controls.highlightLinks ? "link hl" : "link";
+  // otherwise the muted default; type-only edges add `.type` (dashed). Hover
+  // then toggles `.hl`/`.dim` on top.
+  function linkClass(l: RLink): string {
+    return `${controls.highlightLinks ? "link hl" : "link"}${l.type ? " type" : ""}`;
   }
 
-  function tooltipHtml(d: RNode): string {
+  // Base (unweighted) instability of a node from the live adjacency: Ce/(Ce+Ca),
+  // identical to the server's edge weight. Used to show how much each import
+  // costs — a stable target (icons/constants, I₀→0) is nearly free.
+  const i0Of = (id: string): number => {
+    const ce = ga.out.get(id)?.size ?? 0;
+    const ca = ga.inn.get(id)?.size ?? 0;
+    return ce + ca === 0 ? 0 : ce / (ce + ca);
+  };
+
+  function tooltipHtml(d: RNode, detailed: boolean): string {
     // Node colour already conveys green; only surface non-green status.
     const status = d.analyzing
       ? ' <span class="tip-mut">analyzing</span>'
@@ -374,6 +403,71 @@ export function initGraph(opts: InitOptions): GraphController {
         const more = rows.length > 8 ? `<br>+${rows.length - 8} more` : "";
         html += `<br><span class="tip-blame">${top}${more}</span>`;
       }
+    }
+    if (detailed) {
+      html += breakdownHtml(d);
+    } else if (breakdown?.[d.id]) {
+      html += `<br><span class="tip-mut">hold ⌥ alt for cost breakdown</span>`;
+    }
+    return html;
+  }
+
+  // The alt-hover detail: which files drive THIS file's change-cost, and by how
+  // much. Authoritative overhead per driver comes from the server breakdown;
+  // the contributor lists (imports weighted by volatility, transitive
+  // dependents by LoC) are derived from the graph structure the tool already holds.
+  function breakdownHtml(d: RNode): string {
+    let html = `<br><span class="tip-mut">— change-cost breakdown —</span>`;
+    const bd = breakdown?.[d.id];
+    if (!bd) {
+      return `${html}<br><span class="tip-mut">at its floor · nothing dragging the score here</span>`;
+    }
+    const overhead = bd.comprehension + bd.blast + bd.types;
+    const share = (x: number) => (overhead > 0 ? Math.round((x / overhead) * 100) : 0);
+    const dot = (c: string) =>
+      `<span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:${c};margin-right:4px"></span>`;
+    const list = (rows: { n: string; tail: string }[]): string => {
+      const top = rows
+        .slice(0, 5)
+        .map((r) => `<br>&nbsp;&nbsp;· ${esc(r.n)} <span class="tip-mut">${r.tail}</span>`)
+        .join("");
+      const more =
+        rows.length > 5
+          ? `<br>&nbsp;&nbsp;<span class="tip-mut">+${rows.length - 5} more</span>`
+          : "";
+      return top + more;
+    };
+
+    if (bd.comprehension > 0) {
+      const imports = [...(ga.out.get(d.id) ?? [])]
+        .map((id) => ({ n: byId.get(id)?.name ?? id, w: i0Of(id) }))
+        .sort((a, b) => b.w - a.w);
+      html +=
+        `<br>${dot(DRIVER_COLOR.comprehension)}excess coupling <b>${share(bd.comprehension)}%</b>` +
+        ` <span class="tip-mut">· ${imports.length} imports, weighted ${bd.weightedFanout}</span>` +
+        list(imports.map((r) => ({ n: r.n, tail: `×${r.w.toFixed(2)}` })));
+    }
+    if (bd.blast > 0) {
+      const deps = new Set(isolateSet(d.id, "up", ga));
+      deps.delete(d.id);
+      const rows = [...deps]
+        .map((id) => ({ n: byId.get(id)?.name ?? id, loc: byId.get(id)?.size ?? 0 }))
+        .sort((a, b) => b.loc - a.loc);
+      const depLoc = rows.reduce((s, r) => s + r.loc, 0);
+      html +=
+        `<br>${dot(DRIVER_COLOR.blast)}change blast <b>${share(bd.blast)}%</b>` +
+        ` <span class="tip-mut">· ${deps.size} files (${depLoc} LOC, ${Math.round(bd.blastRadius * 100)}% of codebase) depend on this · instability ${bd.instability.toFixed(2)}</span>` +
+        list(rows.map((r) => ({ n: r.n, tail: `${r.loc} LOC` })));
+    }
+    if (bd.types > 0) {
+      html +=
+        `<br>${dot(DRIVER_COLOR.types)}type errors <b>${share(bd.types)}%</b>` +
+        ` <span class="tip-mut">· ${d.errors} own ${d.errors === 1 ? "error" : "errors"}, costlier the wider it's depended on</span>`;
+    }
+    if (bd.cxWeight > 1) {
+      html +=
+        `<br>${dot(COMPLEXITY_COLOR)}complexity load <b>×${bd.cxWeight.toFixed(2)}</b>` +
+        ` <span class="tip-mut">· ${d.cc} branches / ${d.size} lines multiply the flaws above</span>`;
     }
     return html;
   }
@@ -479,11 +573,12 @@ export function initGraph(opts: InitOptions): GraphController {
     renderHalos();
   }
 
-  // Driver-highlight rings: a coloured disc behind each node, sized a touch
-  // larger than the node so a thin ring shows around it, at opacity = the
-  // node's normalised contribution to the selected driver. One circle per node
-  // (far cheaper than per-node drop-shadow filters); hidden entirely when no
-  // driver is selected or the contribution is negligible.
+  // Driver-highlight rings: a coloured ring around each node — a translucent
+  // disc behind it (so only the annulus past the node shows) plus a crisp
+  // stroke, both at an opacity driven by the node's normalised contribution to
+  // the selected driver (with a floor so faint contributors stay visible). One
+  // circle per node (far cheaper than per-node drop-shadow filters); hidden
+  // entirely when no driver is selected or the contribution is negligible.
   function renderHalos(): void {
     if (!haloSel || !nodeSel) return;
     if (driver === null || contrib === null) {
@@ -492,7 +587,9 @@ export function initGraph(opts: InitOptions): GraphController {
     }
     const key = driver;
     const data = contrib;
-    const col = DRIVER_COLOR[key];
+    // Change blast rings are red for contrast (purple reads poorly on the dark
+    // canvas); the panel/legend keeps blast purple to stay distinct from types.
+    const col = key === "blast" ? RED : DRIVER_COLOR[key];
     const intensity = (d: RNode) => data[d.id]?.[key] ?? 0;
     haloSel
       .attr("display", (d) => (intensity(d) >= HALO_EPS && !isHidden(d) ? null : "none"))
@@ -500,7 +597,10 @@ export function initGraph(opts: InitOptions): GraphController {
       .attr("cy", (d) => d.y!)
       .attr("r", (d) => nodeR(d) + HALO_OFFSET)
       .attr("fill", col)
-      .attr("fill-opacity", (d) => intensity(d));
+      .attr("fill-opacity", (d) => intensity(d) * 0.5)
+      .attr("stroke", col)
+      .attr("stroke-width", HALO_STROKE)
+      .attr("stroke-opacity", (d) => Math.max(0.3, intensity(d)));
   }
 
   function applySearch(): void {
@@ -529,7 +629,11 @@ export function initGraph(opts: InitOptions): GraphController {
     if (sim) sim.stop();
 
     const nodes = graph.nodes.map(toRNode);
-    const links: RLink[] = graph.edges.map((e) => ({ source: e.from, target: e.to }));
+    const links: RLink[] = graph.edges.map((e) => ({
+      source: e.from,
+      target: e.to,
+      type: e.type ?? false,
+    }));
     const maxHeight = graph.maxHeight;
     current = { nodes, links, maxHeight };
 
@@ -667,6 +771,7 @@ export function initGraph(opts: InitOptions): GraphController {
       nodes.map((n) => n.id),
       links.map((l) => ({ source: linkId(l.source), target: linkId(l.target) })),
     );
+    byId = new Map(nodes.map((node) => [node.id, node]));
 
     nodeSel
       .on("click", (e: MouseEvent, d) => {
@@ -693,14 +798,23 @@ export function initGraph(opts: InitOptions): GraphController {
         linkSel!
           .classed("hl", (l) => l.source === d || l.target === d)
           .classed("dim", (l) => l.source !== d && l.target !== d);
-        tooltip.innerHTML = tooltipHtml(d);
+        hovered = d;
+        hoverDetail = e.altKey;
+        tooltip.innerHTML = tooltipHtml(d, hoverDetail);
         tooltip.style.opacity = "1";
       })
       .on("mousemove", (e: MouseEvent) => {
         tooltip.style.left = `${e.clientX + 14}px`;
         tooltip.style.top = `${e.clientY + 14}px`;
+        // Alt can be pressed/released mid-hover without a new mouseover; swap
+        // the tooltip mode when the modifier state changes.
+        if (hovered && e.altKey !== hoverDetail) {
+          hoverDetail = e.altKey;
+          tooltip.innerHTML = tooltipHtml(hovered, hoverDetail);
+        }
       })
       .on("mouseout", () => {
+        hovered = null;
         // Restore the baseline: keep every edge blue when "highlight links" is
         // on, otherwise clear the hover emphasis entirely.
         linkSel!.classed("hl", controls.highlightLinks).classed("dim", false);
@@ -740,6 +854,10 @@ export function initGraph(opts: InitOptions): GraphController {
     renderHalos();
   }
 
+  function setBreakdown(next: Record<string, MaintainabilityBreakdown> | null): void {
+    breakdown = next;
+  }
+
   // Toggle a node-focus isolate; `refresh()` reapplies visibility + link overlay.
   function isolate(id: string, dir: FocusDir): void {
     const already = focus !== null && focus.root === id && focus.dir === dir;
@@ -769,6 +887,7 @@ export function initGraph(opts: InitOptions): GraphController {
     toggleDepth,
     focusDependents,
     setDriverHighlight,
+    setBreakdown,
     destroy,
   };
 }

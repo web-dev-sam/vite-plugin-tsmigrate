@@ -1,6 +1,7 @@
 import type {
   Graph,
   Maintainability,
+  MaintainabilityBreakdown,
   MaintainabilityContributions,
   MaintainabilityHotspot,
 } from "../shared/types.ts";
@@ -87,6 +88,7 @@ export function scoreMaintainability(graph: Graph): Maintainability {
       typeHealth: typeAvailable ? typedFraction(nodes, totalLoc) : null,
       hotspots: [],
       contributions: {},
+      breakdown: {},
     };
   }
 
@@ -189,6 +191,7 @@ export function scoreMaintainability(graph: Graph): Maintainability {
   let maxC = 0;
   let maxB = 0;
   let maxT = 0;
+  const breakdown: Record<string, MaintainabilityBreakdown> = {};
 
   for (let i = 0; i < n; i++) {
     const li = loc(i);
@@ -233,6 +236,21 @@ export function scoreMaintainability(graph: Graph): Maintainability {
     if (contribT[i]! > maxT) maxT = contribT[i]!;
     if (inCycle(i)) {
       cycleLoc += li;
+    }
+
+    // Ship a per-file breakdown for the alt-hover detail view — but only for
+    // files that actually drag the score (carry overhead) or amplify via
+    // complexity. Clean files at their floor are omitted to keep the payload small.
+    if (contribC[i]! > 0 || contribB[i]! > 0 || contribT[i]! > 0 || cxWeight > 1) {
+      breakdown[nodes[i]!.id] = {
+        comprehension: Math.round(contribC[i]! * 10) / 10,
+        blast: Math.round(contribB[i]! * 10) / 10,
+        types: Math.round(contribT[i]! * 10) / 10,
+        weightedFanout: Math.round(ceW * 10) / 10,
+        instability: Math.round(instability * 1000) / 1000,
+        blastRadius: Math.round(blastRadius * 1000) / 1000,
+        cxWeight: Math.round(cxWeight * 100) / 100,
+      };
     }
 
     hotspots.push({
@@ -294,6 +312,7 @@ export function scoreMaintainability(graph: Graph): Maintainability {
     typeHealth: typeAvailable ? typedFraction(nodes, totalLoc) : null,
     hotspots: hotspots.slice(0, MAX_HOTSPOTS),
     contributions,
+    breakdown,
   };
 }
 

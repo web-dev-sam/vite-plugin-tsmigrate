@@ -55,6 +55,12 @@ export interface ComponentNode {
 export interface ComponentEdge {
   from: string;
   to: string;
+  /**
+   * True when this edge exists *only* via TypeScript type-only imports
+   * (`import type` / `import { type X }`) — no value or side-effect
+   * dependency. Omitted for value edges. Rendered dashed in the tool.
+   */
+  type?: boolean;
 }
 
 /** A self-consistent induced graph: heights/edges/maxHeight all relative to `nodes`. */
@@ -102,6 +108,30 @@ export type MaintainabilityContributions = Record<
   string,
   { comprehension: number; blast: number; types: number }
 >;
+
+/**
+ * Per-node change-cost breakdown for the alt-hover detail view: the
+ * LoC-equivalent overhead each driver adds to THIS file, plus the raw
+ * structural ingredients (weighted fan-out, instability, blast radius) and the
+ * complexity multiplier. Present only for files that carry overhead or
+ * complexity; a file absent from the map sits at its own floor. Keyed by node id.
+ */
+export interface MaintainabilityBreakdown {
+  /** Excess-coupling overhead this file adds, in LoC-equivalent units. */
+  comprehension: number;
+  /** Change-blast overhead, in LoC-equivalent units. */
+  blast: number;
+  /** Type-error overhead, in LoC-equivalent units. */
+  types: number;
+  /** Volatility-weighted fan-out (Ceʷ) — only volatile imports count toward it. */
+  weightedFanout: number;
+  /** Instability `Ceʷ/(Ceʷ+Ca)` ∈ [0,1]. */
+  instability: number;
+  /** Fraction of the codebase's LoC that transitively depends on this file. */
+  blastRadius: number;
+  /** Flaw-cost multiplier from complexity (1 = no amplification). */
+  cxWeight: number;
+}
 /**
  * Whole-graph maintainability score: the modelled cost of a safe change,
  * normalised against the "read every file once" floor (higher = cheaper to
@@ -138,6 +168,8 @@ export interface Maintainability {
   hotspots: MaintainabilityHotspot[];
   /** Per-node normalised contribution to each driver, for the driver-highlight rings. */
   contributions: MaintainabilityContributions;
+  /** Per-node change-cost breakdown for the alt-hover detail view (files at their floor omitted). */
+  breakdown: Record<string, MaintainabilityBreakdown>;
 }
 
 export interface ComponentGraph {
