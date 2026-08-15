@@ -33,6 +33,11 @@ A minimal, well-structured **Vite 8** plugin (hello world), developed with the
 "queued"`; currently `loc` and `blame`.
   - `cache.ts` — FactStore keyed (file, analyzer); invalidate per file
     (watcher) or per kind (blame on HEAD move).
+  - `churn.ts` — git-history churn estimator (one `git log --numstat -M` per
+    involved repo, submodule-aware; damped deleted-lines-per-month over a
+    fixed 18-month window) feeding the score's volatility term;
+    `maintainability.ts` — the score itself (typed-discount model, constants
+    - docs in `docs/maintainability-score.md`).
   - `engine.ts` — orchestration: crawl + schedule + bounded queue (4) +
     monotonic `version`; snapshots are progressive, never blocking.
 - `src/server/` —

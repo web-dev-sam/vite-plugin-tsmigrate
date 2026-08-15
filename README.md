@@ -61,51 +61,57 @@ tsmigrate({
 
 ## Options
 
-| Option             | Type                     | Default                                        | Description                                                                                                                                                                                            |
-| ------------------ | ------------------------ | ---------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `typeCheckCommand` | `string[] \| false`      | `["vue-tsc", "--noEmit", "--pretty", "false"]` | Command run once for the project-wide type-check whose per-file error counts colour the graph. Must emit `tsc`-style `--pretty false` diagnostics. `false` skips the pass (every file shows as typed). |
-| `scoreTypeRisk`    | `boolean`                | `true`                                         | Include type risk in the maintainability score. `false` scores structure only (comprehension + blast) — the type pass still runs and colours nodes, but type errors cost nothing.                      |
-| `blame`            | `boolean`                | `false`                                        | Enable per-file `git blame` (LoC per author) in the tool. Needs real commit history — a shallow clone has none.                                                                                        |
-| `blameAliases`     | `Record<string, string>` | `{}`                                           | Map raw `git blame` author names to canonical display names (line counts merge). Only used when `blame` is on.                                                                                         |
-| `toolPort`         | `number`                 | `7357`                                         | Port for the plugin's own tool server (dev only); falls back to an ephemeral port when taken.                                                                                                          |
-| `logOnStart`       | `boolean`                | `true`                                         | Log the tool URL when the dev server starts.                                                                                                                                                           |
+| Option             | Type                     | Default                                        | Description                                                                                                                                                                                                                                   |
+| ------------------ | ------------------------ | ---------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `typeCheckCommand` | `string[] \| false`      | `["vue-tsc", "--noEmit", "--pretty", "false"]` | Command run once for the project-wide type-check whose per-file error counts colour the graph. Must emit `tsc`-style `--pretty false` diagnostics. `false` skips the pass (every file shows as typed).                                        |
+| `scoreTypeRisk`    | `boolean`                | `true`                                         | Score type risk: files with type errors pay full price for their flaws while typed files pay a fraction (the compiler carries re-verification). `false` treats every file as typed — the post-migration structural ceiling.                   |
+| `churn`            | `boolean`                | `true`                                         | Feed real git churn into the score's volatility term (one bounded `git log --numstat` per involved repo; submodules resolved per file). Measures deleted lines per month; without usable history volatility falls back to a structural floor. |
+| `blame`            | `boolean`                | `false`                                        | Enable per-file `git blame` (LoC per author) in the tool. Needs real commit history — a shallow clone has none.                                                                                                                               |
+| `blameAliases`     | `Record<string, string>` | `{}`                                           | Map raw `git blame` author names to canonical display names (line counts merge). Only used when `blame` is on.                                                                                                                                |
+| `toolPort`         | `number`                 | `7357`                                         | Port for the plugin's own tool server (dev only); falls back to an ephemeral port when taken.                                                                                                                                                 |
+| `logOnStart`       | `boolean`                | `true`                                         | Log the tool URL when the dev server starts.                                                                                                                                                                                                  |
 
 ## Maintainability score
 
-Alongside the graph the tool computes a single **maintainability score** in
-`[0, 100]` (higher is better), shown at the top of the panel and served on
-`GET /api/graph`. It models the expected cost of a _safe_ change — to touch a
-file you must understand it and its imports, re-verify everything that
-transitively imports it, and pay extra where the compiler can't back you up —
-and normalises that cost against the floor of reading every file once, fully
-typed. Per module $m$:
+Alongside the graph the tool computes a single **maintainability score**
+(capped at 100, open below zero; higher is better), shown at the top of the
+panel and served on `GET /api/graph`. It models the structural overhead of a
+_safe_ change — to touch a file you must understand it and its imports,
+navigate its branching, and re-verify everything that transitively imports
+it — and maps the overhead ratio onto a **criterion-referenced** scale. Per
+module $m$ (in LoC-equivalent units):
 
 ```math
-\mathrm{cost}(m) = \mathrm{loc}(m)\cdot\bigl(1 + \alpha\max(0, C_e^{w}(m){-}K) + \beta\,I(m)\,r(m) + \mathrm{type}(m)\bigr)
+\mathrm{cost}(m) = \mathrm{loc}(m) + t(m)\cdot\bigl(\mathrm{comp}(m) + \mathrm{mass}(m)\bigr) + \bigl(D + (1{-}D)\,u_{\text{dep}}(m)\bigr)\cdot\mathrm{blast}(m)
 ```
 
-$$\text{score} = 100\cdot\frac{\sum_m \mathrm{loc}(m)}{\sum_m \mathrm{cost}(m)}$$
+$$\Omega = \frac{\sum_m \mathrm{cost}(m) - \sum_m \mathrm{loc}(m)}{\sum_m \mathrm{loc}(m)}, \qquad \text{score} = \min\Bigl(100,\; 30 - 25\log_2 \tfrac{\Omega}{\Omega_{\text{typ}}}\Bigr)$$
 
 where:
 
-```math
-\begin{aligned}
-\alpha &= \text{excess-coupling weight (only weighted fan-out above the budget } K \text{ is charged)} \\
-\beta &= \text{change-blast weight} \\
-\gamma &= \text{type-error weight} \\
-\delta &= \text{type-error blast weight} \\
-K &= \text{healthy weighted fan-out budget (ordinary modularity is free)} \\
-C_e^{w}(m) &= \sum_{d} I_0(d) \quad \text{volatility-weighted fan-out: each import scaled by its target's instability} \\
-C_a(m) &= \text{fan-in: modules that import } m \\
-I(m) &= \frac{C_e^{w}(m)}{C_e^{w}(m) + C_a(m)} \quad \text{instability (change-likelihood proxy)} \\
-r(m) &= \text{fraction of the codebase that transitively imports } m \text{ (cycles fold in their whole LoC)} \\
-\mathrm{type}(m) &= \gamma\,(1 + \delta\,r) \text{ if } m \text{ carries type errors, else } 0
-\end{aligned}
-```
+- $\mathrm{comp}(m) = \mathrm{loc}\cdot\alpha\max(0, C_e^{w}{-}K)$ — excess
+  coupling: fan-out where each import is priced by its target's volatility;
+  only the excess above the budget $K$ costs.
+- $\mathrm{blast}(m) = \mathrm{loc}\cdot\beta\,\mathrm{vol}\,r$ — change
+  ripple: **vol** is measured git churn (damped **deleted lines** per month ÷
+  file size, saturating on an absolute scale) floored by a shrunk structural
+  estimate; $r$ is the fraction of the codebase that transitively imports $m$
+  (cycles fold in their whole LoC).
+- $\mathrm{mass}(m) = \kappa\,\mathrm{cc}\,(\mathrm{loc}/L_0)^p$ — decision
+  points, script **and** template (`v-if`/`v-for`/…): each branch costs more
+  the bigger the file it is buried in, so splitting a god file genuinely
+  lowers the score. Flat files are free.
+- $t(m)$ and $u_{\text{dep}}(m)$ — the **typed discount** ($D = 0.2$): typed
+  code pays a fifth for its own flaws (the compiler carries the rest); blast
+  discounts by how typed the _dependents_ are. Types are a discount on flaws,
+  never a penalty — a red file with no flaws costs nothing.
+- $\Omega_{\text{typ}} = 0.10$ — a _typical production Vue app_, pinned to
+  score **30** (deliberately not a passing grade); every halving of Ω is
+  worth +25 points.
 
-A clean, fully-typed, modular codebase approaches 100; the panel breaks the
-score into its drivers (excess coupling / change blast / type errors) plus the
-highest-cost hotspot files.
+The panel breaks the score into its drivers (excess coupling / change blast /
+complexity mass), churn coverage, typed %, hotspots, cycles, and the crawl
+scope (files/LoC the graph can actually see, plus unreached files).
 
 The full model — every term, its rationale, the tunable constants, and the
 limits of what a dependency graph can measure — is documented in
@@ -162,7 +168,7 @@ running `vp dev` in its directory.
 
 ![vue-vben-admin import graph](./docs/graph-vben.webp)
 
-_`web-antd`'s component + module graph — 693 nodes / 1643 edges, all green (fully typed). Node size ∝ LoC; edges are import relations._
+_`web-antd`'s full module graph — 719 nodes / 2,177 edges, all green (fully typed), scoring **73/100**: change blast and complexity mass carry the overhead, with 84% of LoC on measured git churn. Node size ∝ LoC; edges are import relations._
 
 `playground/` is a **complex, real-world app**: [vue-vben-admin](https://github.com/vbenjs/vue-vben-admin)'s
 `web-antd` admin — a Vue 3 + TypeScript monorepo (~700 `.vue` + ~700 `.ts`
@@ -198,7 +204,7 @@ Notes specific to this playground:
 
 ![Vuetify module graph](./docs/graph-vuetify.webp)
 
-_`packages/vuetify/src` — 524 TypeScript modules (blue TS rings) / 2371 edges. A fully-migrated component library, all green._
+_`packages/vuetify/src` — 524 TypeScript modules (blue TS rings), a fully-migrated component library scoring **60/100**. Hovering `helpers.ts` shows why: 863 LoC that 200 modules consume — an 88% blast radius on a churning utility hub._
 
 `playground-vuetify/` vendors the **Vuetify monorepo itself**
 ([`vuetifyjs/vuetify`](https://github.com/vuetifyjs/vuetify)) as a git submodule
@@ -234,7 +240,7 @@ playground-vuetify/vuetify && pnpm install`). Vuetify's committed ambient
 
 ![shadcn-vue registry graph](./docs/graph-shadcn.webp)
 
-_The shadcn-vue registry — ~370 largely-independent components arrayed on the outer (leaf) depth rim of the radial layout._
+_The shadcn-vue registry — 448 largely-independent components on the outer (leaf) depth rim, scoring **98/100**: near-zero coupling, every depth row 100% typed._
 
 `playground-shadcn/` vendors the **shadcn-vue monorepo**
 ([`unovue/shadcn-vue`](https://github.com/unovue/shadcn-vue)) as a git submodule

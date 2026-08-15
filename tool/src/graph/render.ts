@@ -28,14 +28,13 @@ const GREEN = "#3fb950";
 const RED = "#f85149";
 // Neutral fill for files still being type-checked — never red-on-unknown.
 const NEUTRAL = "#8b949e";
-// Driver-highlight ring colours (mirror the panel's coloured dots).
+// Driver-highlight ring colours (mirror the panel's coloured dots). Mass is
+// the amber complexity accent, matching the panel's mass readout.
 const DRIVER_COLOR: Record<MaintainabilityDriver, string> = {
   comprehension: "#58a6ff",
   blast: "#a371f7",
-  types: RED,
+  mass: "#d29922",
 };
-// Complexity-load accent (amber), matching the panel's λ readout.
-const COMPLEXITY_COLOR = "#d29922";
 // Driver-highlight ring geometry (user units): how far the ring extends past the
 // node edge, its stroke thickness, and the min contribution worth drawing.
 const HALO_OFFSET = 6;
@@ -179,20 +178,18 @@ export interface DetailContributor {
 
 /** One change-cost driver in the detail panel's breakdown. */
 export interface DetailDriver {
-  key: "comprehension" | "blast" | "types" | "cycle" | "complexity";
+  key: "comprehension" | "blast" | "mass" | "types" | "cycle";
   label: string;
   /** Swatch colour (mirrors the panel's coloured dots). */
   color: string;
-  /** Share of this file's overhead, in percent (null for the complexity multiplier and the cycle row). */
+  /** Share of this file's structural overhead, in percent (null for the type-debt and cycle rows). */
   share: number | null;
-  /** Complexity flaw-cost multiplier (only set for the `complexity` driver). */
-  multiplier?: number;
   /** Muted descriptive tail. */
   meta: string;
   /** Mechanical next step ("imports 12 volatile modules — invert or split"). */
   action?: string;
-  /** Instability ∈ [0,1] for the `blast` driver — surfaced separately so the panel can colour-code it. */
-  instability?: number;
+  /** Volatility ∈ [0,1] for the `blast` driver — surfaced separately so the panel can colour-code it. */
+  volatility?: number;
   /** Weighted contributor rows (imports for coupling, dependents for blast). */
   items: DetailContributor[];
 }
@@ -264,7 +261,7 @@ export interface GraphController {
   setGraph(graph: Graph): void;
   /**
    * Provide the FULL module graph + shipped cycles regardless of the shown
-   * view: the score runs on it, so breakdown contributor lists, ×I₀ tails and
+   * view: the score runs on it, so breakdown contributor lists, ×vol tails and
    * dependent paths must come from it too (in the `vue` view the current
    * view's adjacency cannot add up to the server's numbers).
    */
@@ -282,8 +279,11 @@ export interface GraphController {
     driver: MaintainabilityDriver | null,
     contributions: MaintainabilityContributions | null,
   ): void;
-  /** Update the per-node change-cost breakdown for the detail panel. */
-  setBreakdown(breakdown: Record<string, MaintainabilityBreakdown> | null): void;
+  /** Update the per-node change-cost breakdown + volatility map for the detail panel and edge weights. */
+  setBreakdown(
+    breakdown: Record<string, MaintainabilityBreakdown> | null,
+    volatility: Record<string, number> | null,
+  ): void;
   /** Tear down the simulation, listeners and DOM. */
   destroy(): void;
 }
@@ -298,7 +298,7 @@ interface RNode extends d3.SimulationNodeDatum {
   kind: "vue" | "ts";
   /** Lines of code (prototype `size`). */
   size: number;
-  /** Cyclomatic complexity — decision points in the file's script. */
+  /** Cyclomatic complexity — script decision points + template branches. */
   cc: number;
   /** Own type-error count (prototype `errors`). */
   errors: number;
@@ -405,16 +405,15 @@ export function initGraph(opts: InitOptions): GraphController {
   let byId = new Map<string, RNode>();
   let hovered: RNode | null = null;
 
-  // Per-view I₀ on the value projection (type edges out of both sides, lazy
-  // out of the Ce side) — the exact number the score charges per import, and
-  // therefore the visual weight of every drawn edge.
-  let i0View = new Map<string, number>();
+  // Server-shipped churn-blended volatility per node id — the exact number
+  // the score charges per import, and therefore the visual weight of every
+  // drawn edge (by target). Null until the score arrives.
+  let volatility: Record<string, number> | null = null;
   // FULL module-graph context (set independently of the shown view): the score
-  // runs on it, so the breakdown's contributor lists, ×I₀ tails and dependent
+  // runs on it, so the breakdown's contributor lists, ×vol tails and dependent
   // paths read these — never the current view's adjacency.
   let fullAdj: Adjacency = buildAdjacency([], []);
   let fullNodes = new Map<string, { name: string; loc: number }>();
-  let i0Full = new Map<string, number>();
   let fullEdgeInfo = new Map<
     string,
     { symbols?: string[]; via?: string[]; type?: boolean; lazy?: boolean }
@@ -462,12 +461,12 @@ export function initGraph(opts: InitOptions): GraphController {
   }
 
   // The visual weight of an edge is the exact number the score charges for it:
-  // the target's I₀ on the value projection. Type-only and lazy edges charge
-  // no comprehension (Phase 6), so they pin to the floor — the dashes explain
+  // the target's churn-blended volatility. Type-only and lazy edges charge
+  // no comprehension (§2), so they pin to the floor — the dashes explain
   // why. Opacity is the primary channel ("a stable import is nearly free"
   // renders as nearly invisible), width a secondary pop for heavy edges.
   const linkWeight = (l: RLink): number =>
-    l.type || l.lazy ? 0 : (i0View.get(linkId(l.target)) ?? 0);
+    l.type || l.lazy ? 0 : (volatility?.[linkId(l.target)] ?? 0);
   const linkOpacity = (l: RLink): number => 0.1 + 0.65 * linkWeight(l);
 
   // Bind link <line> elements to the visible subset and position them. Called
@@ -503,26 +502,6 @@ export function initGraph(opts: InitOptions): GraphController {
     }`;
   }
 
-  // Per-node I₀ = Ce/(Ce+Ca) on the value projection, mirroring the server:
-  // type-only edges leave both sides, lazy edges leave the Ce side only. The
-  // shared helper serves both the current view and the full module graph.
-  function projectedI0(graph: Graph): Map<string, number> {
-    const ceSync = new Map<string, number>();
-    const caStruct = new Map<string, number>();
-    for (const e of graph.edges) {
-      if (e.type) continue;
-      caStruct.set(e.to, (caStruct.get(e.to) ?? 0) + 1);
-      if (!e.lazy) ceSync.set(e.from, (ceSync.get(e.from) ?? 0) + 1);
-    }
-    const out = new Map<string, number>();
-    for (const n of graph.nodes) {
-      const ce = ceSync.get(n.id) ?? 0;
-      const ca = caStruct.get(n.id) ?? 0;
-      out.set(n.id, ce + ca === 0 ? 0 : ce / (ce + ca));
-    }
-    return out;
-  }
-
   // The tooltip is now a terse summary: filename, LOC, and the import links in
   // the "X consume it · consumes Y deps" form. Everything else (status, path,
   // depth, blame, change-cost breakdown) lives in the sidebar detail panel.
@@ -548,7 +527,7 @@ export function initGraph(opts: InitOptions): GraphController {
     if (!breakdown) return null;
     const bd = breakdown[d.id];
     const cycle = cycleOf.get(d.id) ?? null;
-    if (!bd && !cycle) return { atFloor: true, drivers: [] };
+    if (!bd && !cycle && d.errors === 0) return { atFloor: true, drivers: [] };
     const nameOf = (id: string) => fullNodes.get(id)?.name ?? byId.get(id)?.name ?? id;
     // Greppable provenance of one full-graph edge: the crossing symbols (and
     // the barrel hop the resolution passed through), or the whole-module kind.
@@ -562,11 +541,11 @@ export function initGraph(opts: InitOptions): GraphController {
       return e.type ? "type-only import" : e.lazy ? "lazy (dynamic import)" : "whole-module import";
     };
     const drivers: DetailDriver[] = [];
-    const overhead = bd ? bd.comprehension + bd.blast + bd.types : 0;
+    const overhead = bd ? bd.comprehension + bd.blast + bd.mass : 0;
     const share = (x: number) => (overhead > 0 ? Math.round((x / overhead) * 100) : 0);
     if (bd && bd.comprehension > 0) {
       const imports = [...(fullAdj.out.get(d.id) ?? [])]
-        .map((id) => ({ id, n: nameOf(id), w: i0Full.get(id) ?? 0 }))
+        .map((id) => ({ id, n: nameOf(id), w: volatility?.[id] ?? 0 }))
         .sort((a, b) => b.w - a.w);
       const volatile = imports.filter((r) => r.w >= 0.5).length;
       drivers.push({
@@ -627,19 +606,21 @@ export function initGraph(opts: InitOptions): GraphController {
         meta:
           `${rows.length} files (${depLoc} LOC, ${Math.round(bd.blastRadius * 100)}% of codebase) ` +
           `depend on this`,
-        action: "volatile and widely imported — stabilize its own imports",
-        instability: bd.instability,
+        action: "volatile and widely imported — stabilize or split it",
+        volatility: bd.volatility,
         items: rows.map((r) => ({ name: r.n, tail: `${r.loc} LOC`, why: pathWhy(r.id) })),
       });
     }
-    if (bd && bd.types > 0) {
+    if (d.errors > 0) {
       drivers.push({
         key: "types",
         label: "type errors",
-        color: DRIVER_COLOR.types,
-        share: share(bd.types),
-        meta: `${d.errors} own ${d.errors === 1 ? "error" : "errors"}, costlier the wider it's depended on`,
-        action: `fix the ${d.errors} ${d.errors === 1 ? "error" : "errors"} here first — widest type-risk radius`,
+        color: RED,
+        share: null,
+        meta:
+          `${d.errors} own ${d.errors === 1 ? "error" : "errors"} — this file's flaws cost ` +
+          `full price (typed files pay a fraction, the compiler carries the rest)`,
+        action: `fix the ${d.errors} ${d.errors === 1 ? "error" : "errors"} here`,
         items: [],
       });
     }
@@ -647,21 +628,22 @@ export function initGraph(opts: InitOptions): GraphController {
       drivers.push({
         key: "cycle",
         label: "import cycle",
-        color: DRIVER_COLOR.types,
+        color: RED,
         share: null,
         meta: `${cycle.members.length} files: ${cycle.label}`,
         action: cycle.cut ? `break ${cycle.cut.label}` : undefined,
         items: [],
       });
     }
-    if (bd && bd.cxWeight > 1) {
+    if (bd && bd.mass > 0) {
       drivers.push({
-        key: "complexity",
-        label: "complexity load",
-        color: COMPLEXITY_COLOR,
-        share: null,
-        multiplier: bd.cxWeight,
-        meta: `${d.cc} branches / ${d.size} lines multiply the flaws above`,
+        key: "mass",
+        label: "complexity mass",
+        color: DRIVER_COLOR.mass,
+        share: share(bd.mass),
+        meta: `${d.cc} branches × ${d.size} lines — each branch costs more in a bigger file`,
+        action:
+          d.size > 300 ? "split the file — smaller files make every branch cheaper" : undefined,
         items: [],
       });
     }
@@ -880,7 +862,6 @@ export function initGraph(opts: InitOptions): GraphController {
       type: e.type ?? false,
       lazy: e.lazy ?? false,
     }));
-    i0View = projectedI0(graph);
     const maxHeight = graph.maxHeight;
     current = { nodes, links, maxHeight };
 
@@ -1113,9 +1094,16 @@ export function initGraph(opts: InitOptions): GraphController {
     renderHalos();
   }
 
-  function setBreakdown(next: Record<string, MaintainabilityBreakdown> | null): void {
+  function setBreakdown(
+    next: Record<string, MaintainabilityBreakdown> | null,
+    vol: Record<string, number> | null,
+  ): void {
     breakdown = next;
-    // The breakdown collapsible fills in once the score arrives.
+    volatility = vol;
+    // The breakdown collapsible fills in once the score arrives — and edge
+    // weights re-style, since an edge's weight is its target's shipped
+    // volatility (0 until then).
+    renderLinks();
     emitDetail();
   }
 
@@ -1153,7 +1141,6 @@ export function initGraph(opts: InitOptions): GraphController {
     if (!full) {
       fullAdj = buildAdjacency([], []);
       fullNodes = new Map();
-      i0Full = new Map();
       fullEdgeInfo = new Map();
       cycleOf = new Map();
       return;
@@ -1163,7 +1150,6 @@ export function initGraph(opts: InitOptions): GraphController {
       full.edges.map((e) => ({ source: e.from, target: e.to })),
     );
     fullNodes = new Map(full.nodes.map((n) => [n.id, { name: n.name, loc: n.loc ?? 0 }]));
-    i0Full = projectedI0(full);
     fullEdgeInfo = new Map(full.edges.map((e) => [`${e.from}\n${e.to}`, e]));
     cycleOf = new Map();
     for (const info of cycles ?? []) {

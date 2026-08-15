@@ -29,14 +29,14 @@ export interface CrawlFile {
  * `files`/`moduleEdges` are the full module view: every reachable file with
  * its kind and symbol-resolved definition edges among them — value/type
  * imports narrowed to their definers, whole-module dependencies as a single
- * edge to the module itself (docs/symbol-resolution.md §2).
+ * edge to the module itself (docs/maintainability-score.md "The graph").
  */
 export interface CrawlResult {
   nodes: string[];
   componentEdges: ComponentEdge[];
   files: CrawlFile[];
   moduleEdges: ComponentEdge[];
-  /** Detected auto-import manifests (§12): bindings invisible to the graph. */
+  /** Detected auto-import manifests (§12): their targets are crawled as nodes, but their importer edges stay invisible. */
   autoImportManifests: string[];
 }
 
@@ -55,6 +55,21 @@ const DEFAULT_ENTRIES = [
   "./src/main.mts",
   "./src/main.mjs",
 ];
+
+/**
+ * Every crawlable source file under the root — the coverage universe the
+ * graph is measured against. Declaration files are excluded (not editable
+ * logic); `node_modules` is excluded by the host glob. Files here that no
+ * entry reaches are the "unreached" readout: dead code, intentional archives,
+ * or crawler blind spots.
+ */
+export async function findSourceFiles(host: AnalysisHost): Promise<string[]> {
+  const hits = await host.glob(
+    ["**/*.vue", ...Object.keys(SCRIPT_EXTS).map((ext) => `**/*${ext}`)],
+    host.root,
+  );
+  return hits.filter((hit) => !hit.endsWith(".d.ts"));
+}
 
 /**
  * Resolve the app's crawl roots, in priority order:
@@ -195,22 +210,25 @@ export async function crawlGraph(host: AnalysisHost, entries: string[]): Promise
     return [...targets];
   };
 
-  // Discover every reachable project module.
-  const queue = [...entries];
-  while (queue.length > 0) {
-    const file = queue.shift()!;
-    if (directImports.has(file)) {
-      continue;
+  // Discover every project module reachable from a set of roots (BFS).
+  const discover = async (roots: string[]): Promise<void> => {
+    const queue = [...roots];
+    while (queue.length > 0) {
+      const file = queue.shift()!;
+      if (directImports.has(file)) {
+        continue;
+      }
+      const targets = await visit(file);
+      directImports.set(file, targets);
+      if (file.endsWith(".vue")) {
+        vueNodes.add(file);
+      }
+      queue.push(...targets);
     }
-    const targets = await visit(file);
-    directImports.set(file, targets);
-    if (file.endsWith(".vue")) {
-      vueNodes.add(file);
-    }
-    queue.push(...targets);
-  }
+  };
+  await discover(entries);
 
-  // Known blind spot (docs/symbol-resolution.md §12): Nuxt / `unplugin-*`
+  // Known blind spot (docs/maintainability-score.md "Limits"): Nuxt / `unplugin-*`
   // auto-imports bind components and composables with NO import statement, so
   // their edges are invisible to the crawl and blast radius reads falsely low.
   // Detect the generated manifests and surface them; recovering the edges
@@ -232,6 +250,26 @@ export async function crawlGraph(host: AnalysisHost, entries: string[]): Promise
       return crawled.some((f) => f.startsWith(prefix));
     })
     .sort();
+
+  // The manifests name their targets as `typeof import("…")` — modules that
+  // are real, reachable code (via auto-import) yet invisible to the import
+  // scan. Crawl them as nodes so they stop reading as dead/unreached; their
+  // *importer* edges stay unrecoverable (the banner above still applies), so
+  // they enter the graph with fan-in 0.
+  const manifestTargets: string[] = [];
+  for (const manifest of autoImportManifests) {
+    const content = await host.readFile(manifest);
+    if (!content) {
+      continue;
+    }
+    for (const match of content.matchAll(/typeof import\(["']([^"']+)["']\)/g)) {
+      const target = accept(await host.resolve(match[1]!, manifest));
+      if (target && !directImports.has(target)) {
+        manifestTargets.push(target);
+      }
+    }
+  }
+  await discover(manifestTargets);
 
   const isVue = (id: string): boolean => id.endsWith(".vue");
   const resolveSpec = (from: string, spec: string): string | null =>

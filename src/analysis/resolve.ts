@@ -5,14 +5,14 @@ import type { ModuleId, SymbolName, Terminality } from "./symbols.ts";
  * Definer resolution: which modules actually *define* what an export — or a
  * whole module namespace — surfaces, following re-export chains through
  * barrels. Extracted and generalized from the crawl's component-only
- * `resolveExport`/`resolveModule` (docs/symbol-resolution.md §6).
+ * `resolveExport`/`resolveModule`.
  *
  * Pure and synchronous: specifier resolution happened during discovery, so the
  * caller injects a `(from, spec) → ModuleId | null` lookup. Parametrized by
  * `Terminality` — the component graph treats only `.vue` files as definers,
  * the module graph also every locally-defined export.
  *
- * Correctness rules carried by this extraction (§6, both latent in the old
+ * Correctness rules carried by this extraction (both latent in the old
  * crawl code and load-bearing once the score consumes the module graph):
  *
  * - **`export *` never forwards `default`** (ESM semantics) — the star

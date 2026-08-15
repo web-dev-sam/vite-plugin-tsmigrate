@@ -49,6 +49,7 @@ export async function startToolServer(
   const engine = new AnalysisEngine(createAnalysisHost(server), {
     typeCheckCommand: options.typeCheckCommand,
     scoreTypeRisk: options.scoreTypeRisk,
+    churn: options.churn,
     blame: options.blame,
     blameAliases: options.blameAliases,
   });

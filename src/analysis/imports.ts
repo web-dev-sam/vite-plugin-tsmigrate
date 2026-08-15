@@ -46,7 +46,7 @@ export type ExportRef =
 
 /**
  * Statically-observed usage of one `import * as local from source` binding
- * (docs/symbol-resolution.md §5). `members` lists the member names read via
+ * (docs/maintainability-score.md "The graph"). `members` lists the member names read via
  * static access (`ns.X`, `ns?.X`, `ns["X"]`, `ns.X` in type positions);
  * `members: null` means narrowing is unsafe and `cause` names why:
  *
@@ -125,8 +125,8 @@ const DECISION_NODES = new Set([
  * Counts `if`, `?:`, every loop, `catch`, each non-default `case`, and each
  * short-circuit operator (`&&`, `||`, `??`) in the oxc AST. This is the *shape*
  * the LoC count cannot see — a 40-branch file and a flat file of equal length
- * weigh the same by LoC but not here. Only the `<script>` of an SFC is parsed,
- * so template branching (`v-if`/`v-for`) is not counted. Unparseable → 0.
+ * weigh the same by LoC but not here. Script only — SFC template branching is
+ * counted separately by `templateBranches`. Unparseable → 0.
  *
  * Iterative walk (an explicit stack) so a deeply nested file cannot overflow.
  */
@@ -508,4 +508,34 @@ export function extractSfcScripts(sfc: string): string {
     blocks.push(match[1]);
   }
   return blocks.join("\n");
+}
+
+// Template branch points: each `v-if`/`v-else-if`/`v-for`/`v-show` binding is
+// one decision the reader must trace (`v-else` is the arm of its `v-if`, not
+// a new decision). Matched as attributes (`=` required) so prose mentioning a
+// directive doesn't count.
+const TEMPLATE_BRANCH_RE = /\bv-(?:if|else-if|for|show)\s*=/g;
+
+/**
+ * Branch points in an SFC's `<template>` markup — the decisions
+ * `cyclomaticComplexity` cannot see because only `<script>` blocks are
+ * parsed. A `v-if`-dense component with a flat script is real branching load;
+ * the maintainability score adds these to the file's cc. Counted over the
+ * outermost template block (nested `<template #slot>` markup is inside it).
+ */
+export function templateBranches(sfc: string): number {
+  const open = sfc.match(/<template[^>]*>/i);
+  if (!open || open.index === undefined) {
+    return 0;
+  }
+  const start = open.index + open[0].length;
+  const end = sfc.lastIndexOf("</template>");
+  if (end <= start) {
+    return 0;
+  }
+  let count = 0;
+  for (const _ of sfc.slice(start, end).matchAll(TEMPLATE_BRANCH_RE)) {
+    count++;
+  }
+  return count;
 }

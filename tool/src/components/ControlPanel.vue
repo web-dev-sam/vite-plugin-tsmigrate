@@ -1,6 +1,10 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
-import type { Maintainability, MaintainabilityDriver } from "../../../src/shared/types.ts";
+import type {
+  CoverageSummary,
+  Maintainability,
+  MaintainabilityDriver,
+} from "../../../src/shared/types.ts";
 import type { CycleInfo, DepthRow, Mode, NodeDetail, Readouts } from "../graph/render.ts";
 import NodeDetailPanel from "./NodeDetailPanel.vue";
 import Checkbox from "../ui/Checkbox.vue";
@@ -28,6 +32,8 @@ defineProps<{
   ripgrep: boolean;
   /** Whole-graph maintainability score (over the full module graph). */
   maintainability: Maintainability | null;
+  /** Crawl scope: graph vs. total source files/LoC, with the unreached list (null until the graph arrives). */
+  coverage: CoverageSummary | null;
   /** The driver whose per-node contribution the graph is highlighting (null = none). */
   activeDriver: MaintainabilityDriver | null;
   /** Detail of the hovered/selected graph node — populates the bottom section (null hides it). */
@@ -105,12 +111,12 @@ const pct = (n: number) => (n * 100).toFixed(0);
 
 const dirOf = (f: string): string => f.slice(0, f.lastIndexOf("/") + 1);
 const baseOf = (f: string): string => f.slice(f.lastIndexOf("/") + 1);
-// Tooltip text around the (colour-coded) instability value: one string each
+// Tooltip text around the (colour-coded) volatility value: one string each
 // side so the formatter can't wedge stray whitespace between the segments.
 function hotspotMetaPre(h: Maintainability["hotspots"][number]): string {
   return (
     ` · ${h.loc} LoC · ${h.cc} branches · imports ${h.fanOut} · imported by ${h.fanIn}` +
-    ` · instability `
+    ` · volatility `
   );
 }
 function hotspotMetaPost(h: Maintainability["hotspots"][number]): string {
@@ -120,20 +126,22 @@ function hotspotMetaPost(h: Maintainability["hotspots"][number]): string {
   );
 }
 
-// Instability ∈ [0,1]: low = stable (green), high = change-prone (red).
-function instabilityTone(v: number): string {
+// Volatility ∈ [0,1]: low = stable (green), high = change-prone (red).
+function volatilityTone(v: number): string {
   if (v < 0.34) {
     return "text-green";
   }
   return v < 0.67 ? "text-warn" : "text-red";
 }
 
-// Score grade: green from 80, amber from 50, else red — mirrors the node palette.
+// Score grade on the criterion-referenced scale: a typical production app
+// sits at 30 (amber starts there), green is reserved for genuinely
+// well-factored codebases, red is below typical. Negatives render red.
 function scoreTone(score: number): string {
-  if (score >= 80) {
+  if (score >= 70) {
     return "text-green";
   }
-  return score >= 50 ? "text-warn" : "text-red";
+  return score >= 30 ? "text-warn" : "text-red";
 }
 
 // The two stacked sections resize by dragging the divider. The bottom (detail)
@@ -192,7 +200,7 @@ function startResize(e: PointerEvent) {
       <Collapsible v-if="maintainability" title="maintainability" flush :default-open="false">
         <template #actions>
           <Tooltip
-            content="How maintainable the codebase is, from 0 to 100. 100 means every change stays small and local; lower means changes tend to ripple across many files. Measured over the full module graph — see docs/maintainability-score.md."
+            content="Criterion-referenced: 100 means every change costs only the reading; a typical production Vue app sits around 30 (deliberately not a passing grade); negatives are genuine disasters. Typed code discounts its flaws — the compiler carries re-verification. Measured over the full module graph — see docs/maintainability-score.md."
           >
             <span
               class="text-2xl font-semibold tabular-nums"
@@ -203,9 +211,9 @@ function startResize(e: PointerEvent) {
           </Tooltip>
         </template>
 
-        <!-- Overhead drivers: excess coupling | change blast | type errors. -->
+        <!-- Structural overhead drivers: excess coupling | change blast | complexity mass. -->
         <Tooltip
-          content="What makes a change cost more than just reading the file: too many imports, ripple from files that lots of code depends on, and type errors. The bar shows how much each one adds."
+          content="What makes a change cost more than just reading the file: too many volatile imports, ripple from churning files that lots of code depends on, and branchy logic buried in big files. The bar shows how much each one adds."
         >
           <div class="mt-2.5 flex h-1.5 overflow-hidden rounded-full bg-border/60">
             <div
@@ -213,7 +221,7 @@ function startResize(e: PointerEvent) {
               :style="{ width: pct(maintainability.drivers.comprehension) + '%' }"
             />
             <div class="bg-purple" :style="{ width: pct(maintainability.drivers.blast) + '%' }" />
-            <div class="bg-red" :style="{ width: pct(maintainability.drivers.types) + '%' }" />
+            <div class="bg-warn" :style="{ width: pct(maintainability.drivers.mass) + '%' }" />
           </div>
         </Tooltip>
 
@@ -233,7 +241,7 @@ function startResize(e: PointerEvent) {
             </StatRow>
           </Tooltip>
           <Tooltip
-            content="How far a change to this file spreads. High only when the file both changes often (it depends on many modules) and is widely imported (many files then need re-checking). Otherwise low, however big it is."
+            content="How far a change to this file spreads. High only when the file really changes (measured from git history as deleted lines per month, floored by a structural estimate) and is widely imported — many files then need re-checking. A stable foundation stays cheap however popular it is."
           >
             <StatRow
               class="-mx-1 cursor-pointer rounded px-1 transition-colors hover:bg-border/40"
@@ -247,37 +255,23 @@ function startResize(e: PointerEvent) {
             </StatRow>
           </Tooltip>
           <Tooltip
-            v-if="maintainability.typeHealth !== null"
-            content="Files that have type errors, counted more heavily the more widely they're imported — a bad type in a core file hurts far more than one in a rarely-used leaf."
+            content="Branch-dense logic in big files: every decision point costs more the bigger the file it's buried in. Flat files (prose, plain declarations) cost nothing however long they are — splitting a god file genuinely lowers this."
           >
             <StatRow
               class="-mx-1 cursor-pointer rounded px-1 transition-colors hover:bg-border/40"
-              :class="{ 'bg-border/60': activeDriver === 'types' }"
-              @click="emit('driverClick', 'types')"
+              :class="{ 'bg-border/60': activeDriver === 'mass' }"
+              @click="emit('driverClick', 'mass')"
             >
               <template #label>
-                <span class="inline-block size-2 rounded-full bg-red" />type errors
+                <span class="inline-block size-2 rounded-full bg-warn" />complexity mass
               </template>
-              {{ pct(maintainability.drivers.types) }}%
+              {{ pct(maintainability.drivers.mass) }}%
             </StatRow>
           </Tooltip>
           <div
-            v-if="
-              maintainability.cycleLoc > 0 ||
-              maintainability.typeHealth !== null ||
-              maintainability.complexityAmplification > 0
-            "
+            v-if="maintainability.cycleLoc > 0 || maintainability.typeHealth !== null"
             class="border-t border-border/60"
           />
-          <Tooltip
-            v-if="maintainability.complexityAmplification > 0"
-            content="How much of the cost above comes from those flaws sitting in complex, branch-dense files. Complexity never counts on its own — it multiplies the cost of real problems."
-          >
-            <StatRow>
-              <template #label><span class="text-warn">λ</span>complexity load</template>
-              {{ pct(maintainability.complexityAmplification) }}%
-            </StatRow>
-          </Tooltip>
           <Tooltip
             v-if="maintainability.cycleLoc > 0"
             content="Code stuck in import cycles: files that import each other in a loop, so you can't read, test, or change one on its own."
@@ -288,8 +282,17 @@ function startResize(e: PointerEvent) {
             </StatRow>
           </Tooltip>
           <Tooltip
+            v-if="maintainability.churnCoverage !== null"
+            content="How much of the graph (by LoC) has usable git history behind its volatility. The rest falls back to a structural estimate — the score still works, but it can't see real churn there (shallow clones and fresh repos read low)."
+          >
+            <StatRow>
+              <template #label><span class="text-muted">⟳</span>churn measured</template>
+              {{ pct(maintainability.churnCoverage) }}% LoC
+            </StatRow>
+          </Tooltip>
+          <Tooltip
             v-if="maintainability.typeHealth !== null"
-            content="How much of the codebase, by lines of code, is free of type errors — the migration's headline progress and the biggest lever on the score."
+            content="How much of the codebase, by lines of code, is free of type errors — the migration's headline progress readout."
           >
             <StatRow>
               <template #label><Dot tone="green" />typed</template>
@@ -323,9 +326,7 @@ function startResize(e: PointerEvent) {
                   ><span class="text-muted">{{ dirOf(h.file) }}</span
                   ><span class="text-purple">{{ baseOf(h.file) }}</span
                   >{{ hotspotMetaPre(h)
-                  }}<span :class="instabilityTone(h.instability)">{{
-                    h.instability.toFixed(2)
-                  }}</span
+                  }}<span :class="volatilityTone(h.volatility)">{{ h.volatility.toFixed(2) }}</span
                   >{{ hotspotMetaPost(h) }}</template
                 >
                 <td class="max-w-[240px] truncate py-0.5 pl-2 first:rounded-l">
@@ -379,6 +380,38 @@ function startResize(e: PointerEvent) {
               </Tooltip>
             </tbody>
           </table>
+        </div>
+
+        <!-- Crawl scope: prevents reading a JS-graph score as a repo-wide verdict. -->
+        <div v-if="coverage" class="mt-3">
+          <div class="mb-1 px-2 text-xs font-medium tracking-wide text-muted uppercase">scope</div>
+          <Tooltip
+            content="What the score can actually see. Only files reachable from the app's entry are measured — anything else (dead code, intentional archives, files only bound via auto-imports the crawler can't trace, and every non-JS surface like backend code or i18n JSONs) is invisible to it."
+          >
+            <p class="px-2 text-xs text-muted">
+              graph covers {{ fmt(coverage.graphFiles) }} of {{ fmt(coverage.sourceFiles) }} source
+              files ·
+              {{ coverage.sourceLoc > 0 ? pct(coverage.graphLoc / coverage.sourceLoc) : 100 }}% of
+              source LoC
+            </p>
+          </Tooltip>
+          <Collapsible
+            v-if="coverage.unreached.length"
+            :title="`${fmt(coverage.sourceFiles - coverage.graphFiles)} unreached files`"
+            :default-open="false"
+          >
+            <ul class="max-h-40 space-y-0.5 overflow-y-auto">
+              <li
+                v-for="u in coverage.unreached"
+                :key="u.file"
+                class="flex items-center justify-between gap-2 text-xs"
+                :title="u.file"
+              >
+                <span class="truncate text-muted">{{ u.file }}</span>
+                <span class="shrink-0 text-muted tabular-nums">{{ u.loc }} LoC</span>
+              </li>
+            </ul>
+          </Collapsible>
         </div>
       </Collapsible>
 

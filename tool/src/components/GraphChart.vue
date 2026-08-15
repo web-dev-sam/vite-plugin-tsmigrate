@@ -30,6 +30,8 @@ const props = defineProps<{
   driver: MaintainabilityDriver | null;
   contributions: MaintainabilityContributions | null;
   breakdown: Record<string, MaintainabilityBreakdown> | null;
+  /** Server-shipped per-node volatility — edge visual weights. */
+  volatility: Record<string, number> | null;
 }>();
 const emit = defineEmits<{
   readouts: [Readouts];
@@ -55,7 +57,7 @@ onMounted(() => {
   controller.setGraph(props.graph);
   controller.setFullGraph(props.fullGraph, props.cycles);
   controller.setDriverHighlight(props.driver, props.contributions);
-  controller.setBreakdown(props.breakdown);
+  controller.setBreakdown(props.breakdown, props.volatility);
 });
 
 // A new graph reference means a vue↔full swap or fresh server data.
@@ -77,8 +79,8 @@ watch(
   () => controller?.setDriverHighlight(props.driver, props.contributions),
 );
 watch(
-  () => props.breakdown,
-  (b) => controller?.setBreakdown(b),
+  () => [props.breakdown, props.volatility],
+  () => controller?.setBreakdown(props.breakdown, props.volatility),
 );
 
 onUnmounted(() => controller?.destroy());

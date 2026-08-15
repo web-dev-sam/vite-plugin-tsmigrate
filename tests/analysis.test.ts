@@ -10,7 +10,13 @@ import { scoreMaintainability } from "../src/analysis/maintainability.ts";
 import { computeHeights, type FileFacts, groupOf, makeGraph } from "../src/analysis/topology.ts";
 import type { Graph, Maintainability } from "../src/shared/types.ts";
 import { parseTscErrors } from "../src/analysis/typecheck.ts";
-import { cyclomaticComplexity, parseModule } from "../src/analysis/imports.ts";
+import { cyclomaticComplexity, parseModule, templateBranches } from "../src/analysis/imports.ts";
+import {
+  collectChurn,
+  estimateChurn,
+  type FileChurn,
+  parseNumstatLog,
+} from "../src/analysis/churn.ts";
 
 const ROOT = "/app";
 
@@ -379,7 +385,7 @@ test("a hub module does not spill its internal imports onto consumers", async ()
   expect(edges.filter((e) => e.from === "/h/src/AuthSuite.vue")).toEqual([]);
 });
 
-// --- symbol-resolved module edges (docs/symbol-resolution.md) ------------------
+// --- symbol-resolved module edges (docs/maintainability-score.md "The graph") ---
 
 // A minimal fake host over an in-memory file map rooted at `/s`, with the same
 // relative-specifier resolution the crawl tests above use.
@@ -610,7 +616,7 @@ test("auto-import manifests are detected only when their app was crawled", async
   expect(autoImportManifests).toEqual(["/s/app/components.d.ts"]);
 });
 
-// --- Phase 5: namespace precision (docs/symbol-resolution.md §5) ---------------
+// --- namespace precision (docs/maintainability-score.md "The graph") -----------
 
 test("namespace usage collection: members, escapes, shadowing, sfc blind spot", () => {
   // Static member reads — value, optional, string-key, and type positions.
@@ -803,15 +809,21 @@ test("engine produces a complete two-graph snapshot with all facts", async () =>
   expect(graph.autoImportManifests).toEqual([]);
 
   // Maintainability rides the snapshot, computed over the full graph. The
-  // type-check pass is off here, so typeHealth is null (not a fake 100%).
+  // type-check pass is off here, so typeHealth is null (not a fake 100%);
+  // the churn pass is off by default, so churnCoverage is null too.
   const m = graph.maintainability;
   expect(m.nodes).toBe(graph.full.nodes.length);
-  expect(m.score).toBeGreaterThanOrEqual(0);
   expect(m.score).toBeLessThanOrEqual(100);
   expect(m.floorLoc).toBeGreaterThan(0);
   expect(m.costLoc).toBeGreaterThanOrEqual(m.floorLoc);
   expect(m.typeHealth).toBeNull();
+  expect(m.churnCoverage).toBeNull();
+  expect(m.calibrationEpoch).toBeTruthy();
   expect(Array.isArray(m.hotspots)).toBe(true);
+
+  // Crawl coverage: the fixture host globs nothing, so the graph covers all.
+  expect(graph.coverage.graphFiles).toBe(graph.full.nodes.length);
+  expect(graph.coverage.unreached).toEqual([]);
 
   // Snapshot version is stable once everything is computed — the cheap
   // `?since=` probe contract relies on this.
@@ -935,11 +947,11 @@ test("engine flows type errors into typeErrors and strictRed", async () => {
   expect(red).toHaveLength(2); // Child + App
 });
 
-test("engine scoreTypeRisk:false keeps node coloring but scores structure only", async () => {
+test("engine scoreTypeRisk:false scores the post-migration ceiling, keeping typed %", async () => {
   const diagnostics = "src/components/Child.vue(2,7): error TS2322: boom\n";
-  const run = (scoreTypeRisk: boolean) => {
+  const run = (scoreTypeRisk: boolean, diag: string) => {
     const engine = new AnalysisEngine(
-      fakeHost(async () => ({ stdout: diagnostics, stderr: "", code: 1 })),
+      fakeHost(async () => ({ stdout: diag, stderr: "", code: diag === "" ? 0 : 1 })),
       { typeCheckCommand: ["tsc", "--noEmit", "--pretty", "false"], scoreTypeRisk },
     );
     return expect
@@ -947,7 +959,7 @@ test("engine scoreTypeRisk:false keeps node coloring but scores structure only",
       .toBe(true)
       .then(() => engine.getGraph());
   };
-  const structural = await run(false);
+  const structural = await run(false, diagnostics);
 
   // Coloring / typing progress intact: the type pass ran and marked the file.
   const child = structural.vue.nodes.find((node) => node.file === "src/components/Child.vue")!;
@@ -955,13 +967,14 @@ test("engine scoreTypeRisk:false keeps node coloring but scores structure only",
   expect(child.strictRed).toBe(true);
   expect(structural.maintainability.typeHealth).toBeLessThan(1);
 
-  // Score untouched by the red file: identical to scoring with type risk on
-  // over an all-green codebase — i.e. the default score minus its types term.
-  const scored = await run(true);
-  expect(scored.maintainability.drivers.types).toBeGreaterThan(0);
-  expect(structural.maintainability.drivers.types).toBe(0);
-  expect(structural.maintainability.score).toBeGreaterThanOrEqual(scored.maintainability.score);
-  expect(structural.maintainability.costLoc).toBeLessThan(scored.maintainability.costLoc);
+  // "As if the migration were finished": treating every file as typed
+  // reproduces the all-green score exactly; with type risk on, the red
+  // file's flaws price at full cost instead of the typed discount.
+  const scored = await run(true, diagnostics);
+  const finished = await run(true, "");
+  expect(structural.maintainability.score).toBe(finished.maintainability.score);
+  expect(structural.maintainability.costLoc).toBe(finished.maintainability.costLoc);
+  expect(scored.maintainability.costLoc).toBeGreaterThanOrEqual(structural.maintainability.costLoc);
 });
 
 test("engine treats type-check failure as an error status", async () => {
@@ -1076,31 +1089,24 @@ function graphOf(
 }
 
 test("hotspots surface the biggest score-draggers first, not the biggest files", () => {
-  // A small red file imported widely (real overhead) vs a large, clean, isolated
-  // file that sits exactly at its own floor (huge cost, zero overhead).
+  // A branch-dense mid-size file (real mass overhead) vs a huge flat file
+  // sitting exactly at its own floor (huge cost, zero overhead).
   const g = graphOf(
-    [
-      ["/r/i1.ts", "/r/hub.ts"],
-      ["/r/i2.ts", "/r/hub.ts"],
-      ["/r/i3.ts", "/r/hub.ts"],
-    ],
+    [],
     facts({
-      "/r/hub.ts": { loc: 10, te: 1 },
-      "/r/i1.ts": { loc: 10 },
-      "/r/i2.ts": { loc: 10 },
-      "/r/i3.ts": { loc: 10 },
-      "/r/big.ts": { loc: 1000 },
+      "/r/god.ts": { loc: 600, cc: 60 },
+      "/r/flat.ts": { loc: 2000, cc: 0 },
     }),
   );
   const h = scoreMaintainability(g).hotspots;
-  const hub = h.find((x) => x.file === "hub.ts")!;
-  const big = h.find((x) => x.file === "big.ts")!;
-  // Sorted by overhead (cost − loc): the widely-imported red hub tops the list;
-  // the large clean island ranks below it despite dwarfing it in raw cost.
-  expect(h[0]!.file).toBe("hub.ts");
-  expect(hub.cost - hub.loc).toBeGreaterThan(big.cost - big.loc);
-  expect(big.cost).toBeGreaterThan(hub.cost);
-  expect(h.indexOf(hub)).toBeLessThan(h.indexOf(big));
+  const god = h.find((x) => x.file === "god.ts")!;
+  const flat = h.find((x) => x.file === "flat.ts")!;
+  // Sorted by overhead (cost − loc): the branchy file tops the list; the huge
+  // flat file ranks below it despite dwarfing it in raw cost.
+  expect(h[0]!.file).toBe("god.ts");
+  expect(god.cost - god.loc).toBeGreaterThan(flat.cost - flat.loc);
+  expect(flat.cost).toBeGreaterThan(god.cost);
+  expect(h.indexOf(god)).toBeLessThan(h.indexOf(flat));
 });
 
 test("per-node driver contributions are populated and normalised to the top contributor", () => {
@@ -1111,21 +1117,23 @@ test("per-node driver contributions are populated and normalised to the top cont
       ["/r/i3.ts", "/r/hub.ts"],
     ],
     facts({
-      "/r/hub.ts": { loc: 10, te: 1 },
+      "/r/hub.ts": { loc: 10, cc: 3 },
       "/r/i1.ts": { loc: 10 },
       "/r/i2.ts": { loc: 10 },
       "/r/i3.ts": { loc: 10 },
       "/r/big.ts": { loc: 1000 },
     }),
   );
-  const c = scoreMaintainability(g).contributions;
-  // The red, widely-imported hub is the only (thus top) types contributor → 1.
-  expect(c["/r/hub.ts"]!.types).toBe(1);
+  const c = scoreMaintainability(g, {
+    churn: new Map([["/r/hub.ts", { nEff: 20, deletedPerMonth: 5 }]]),
+  }).contributions;
+  // The churning, widely-imported hub is the only (thus top) blast contributor → 1.
+  expect(c["/r/hub.ts"]!.blast).toBe(1);
   // The large, clean, isolated island has zero overhead → absent from the map.
   expect(c["/r/big.ts"]).toBeUndefined();
   // Every intensity is a normalised [0,1] fraction.
   for (const v of Object.values(c)) {
-    for (const x of [v.comprehension, v.blast, v.types]) {
+    for (const x of [v.comprehension, v.blast, v.mass]) {
       expect(x).toBeGreaterThanOrEqual(0);
       expect(x).toBeLessThanOrEqual(1);
     }
@@ -1191,59 +1199,79 @@ test("cyclomatic complexity counts decision points, not lines", () => {
   expect(cyclomaticComplexity("function (( {", "/x.ts")).toBe(0);
 });
 
-test("complexity analyzer measures only the <script> of an SFC", async () => {
+test("complexity analyzer counts script decision points plus template branches", async () => {
   const sfc =
-    '<script setup lang="ts">\nconst x = a ? 1 : 2;\n</script>\n<template><div v-if="x" /></template>\n';
+    '<script setup lang="ts">\nconst x = a ? 1 : 2;\n</script>\n' +
+    '<template><div v-if="x" /><i v-for="y in x" :key="y" /></template>\n';
   const host = { readFile: async () => sfc } as unknown as AnalysisHost;
-  // The `?:` in the script counts (1); the template `v-if` is not parsed.
-  expect(await complexityAnalyzer.analyze({ host, file: "/c.vue" })).toBe(1);
+  // The `?:` in the script (1) plus the template's `v-if` and `v-for` (2).
+  expect(await complexityAnalyzer.analyze({ host, file: "/c.vue" })).toBe(3);
 });
 
-test("complexity amplifies a file's flaw cost but never punishes on its own", () => {
-  const edges: [string, string][] = [
-    ["/r/i1.ts", "/r/hub.ts"],
-    ["/r/i2.ts", "/r/hub.ts"],
-    ["/r/i3.ts", "/r/hub.ts"],
-  ];
-  const build = (hubCc: number) =>
-    scoreMaintainability(
-      graphOf(
-        edges,
-        facts({
-          "/r/hub.ts": { loc: 20, te: 1, cc: hubCc },
-          "/r/i1.ts": { loc: 20 },
-          "/r/i2.ts": { loc: 20 },
-          "/r/i3.ts": { loc: 20 },
-        }),
-      ),
-    );
-  const simple = build(0);
-  const complex = build(20); // density 1.0 → strong amplification
-  // The same type flaw in branch-dense code costs more → lower score, and the
-  // overhead is partly attributed to complexity.
-  expect(complex.score).toBeLessThan(simple.score);
-  expect(simple.complexityAmplification).toBe(0);
-  expect(complex.complexityAmplification).toBeGreaterThan(0);
+test("templateBranches counts branch directives, not prose or v-else", () => {
+  const sfc = [
+    "<template>",
+    '  <div v-if="a" />',
+    '  <div v-else-if="b" />',
+    "  <div v-else />",
+    '  <li v-for="x in xs" :key="x" />',
+    '  <p v-show="c">v-if is mentioned in prose here</p>',
+    "</template>",
+    "<script>",
+    "const s = 1;",
+    "</script>",
+  ].join("\n");
+  // v-if + v-else-if + v-for + v-show; `v-else` is the arm of its v-if, and
+  // the prose mention has no `=` binding.
+  expect(templateBranches(sfc)).toBe(4);
+  expect(templateBranches("<script>const x = 1;</script>")).toBe(0);
+});
 
-  // A flawless file is untouched by complexity: no coupling, no type debt →
-  // perfect score however branch-dense it is.
-  const flawlessSimple = scoreMaintainability(
-    graphOf([], facts({ "/r/a.ts": { loc: 50, cc: 0 } })),
+test("mass prices branches by file size — splitting a god file lowers the cost", () => {
+  // Same total LoC (1200) and total branches (40): one god file vs four
+  // pivot-sized slices. The escalator makes the god file 4× as expensive.
+  const god = scoreMaintainability(graphOf([], facts({ "/r/god.ts": { loc: 1200, cc: 40 } })));
+  const split = scoreMaintainability(
+    graphOf(
+      [],
+      facts({
+        "/r/s1.ts": { loc: 300, cc: 10 },
+        "/r/s2.ts": { loc: 300, cc: 10 },
+        "/r/s3.ts": { loc: 300, cc: 10 },
+        "/r/s4.ts": { loc: 300, cc: 10 },
+      }),
+    ),
   );
-  const flawlessComplex = scoreMaintainability(
-    graphOf([], facts({ "/r/a.ts": { loc: 50, cc: 100 } })),
-  );
-  expect(flawlessComplex.score).toBe(flawlessSimple.score);
-  expect(flawlessComplex.complexityAmplification).toBe(0);
+  expect(god.costLoc - god.floorLoc).toBe(4 * (split.costLoc - split.floorLoc));
+  expect(split.score).toBeGreaterThan(god.score);
+
+  // cc-gating: a flat file (prose, plain declarations) is free however long.
+  const flat = scoreMaintainability(graphOf([], facts({ "/r/legal.ts": { loc: 900, cc: 0 } })));
+  expect(flat.score).toBe(100);
+  expect(flat.costLoc).toBe(flat.floorLoc);
+});
+
+test("score mapping: Ω_typ anchors 30, 25 points per halving, capped, open below", () => {
+  // A single isolated typed file has no coupling or blast — its Ω is exactly
+  // the discounted mass ratio D·cc/300 (D = 0.2), so the mapping is
+  // observable in isolation.
+  const at = (cc: number) =>
+    scoreMaintainability(graphOf([], facts({ "/r/a.ts": { loc: 300, cc } })));
+  expect(at(150).omega).toBeCloseTo(0.1, 10); // Ω_typ →
+  expect(at(150).score).toBe(30); //   the typical-app anchor
+  expect(at(75).score).toBe(55); // halve Ω → +25
+  expect(at(300).score).toBe(5); // double Ω → −25
+  expect(at(1200).score).toBe(-45); // Ω 0.8 = 3 doublings → open bottom
+  expect(at(0).score).toBe(100); // Ω = 0 is the principled cap
 });
 
 test("per-file breakdown carries the ingredients the alt-hover detail shows", () => {
   //  A ─┐
   //     ├─> B ─> C ─> E     (E is a clean floor leaf: imported, imports nothing)
   //  D ─┘
-  // B is imported by A and D (blast radius), imports the volatile C, and is
-  // itself red and branch-dense — so its cost splits across blast + types,
-  // amplified by complexity.
+  // B is imported by A and D (blast radius), imports C, and is itself red and
+  // branch-dense — so its cost splits across blast + mass, the mass at full
+  // price (t = 1) because B carries its own type error.
   const g = graphOf(
     [
       ["/r/A.ts", "/r/B.ts"],
@@ -1262,53 +1290,59 @@ test("per-file breakdown carries the ingredients the alt-hover detail shows", ()
   const m = scoreMaintainability(g);
   const b = m.breakdown["/r/B.ts"]!;
   expect(b).toBeDefined();
-  // Structural ingredients the contributor lists are built from.
-  expect(b.weightedFanout).toBe(0.5); // one volatile import (C), i0 = 0.5
-  expect(b.instability).toBe(0.2); // 0.5 / (0.5 + 2 importers)
+  // Structural ingredients the contributor lists are built from. With no
+  // churn input, volatility is the floored structural prior 0.15·I₀.
+  expect(b.weightedFanout).toBe(0.1); // one import: vol(C) = 0.15 · 0.5
+  expect(b.volatility).toBe(0.05); // 0.15 · I₀(B) = 0.15 · ⅓
   expect(b.blastRadius).toBe(0.4); // A + D (20 LoC) of 50 total
-  // Cost splits across blast + types, amplified by complexity; no excess coupling.
+  // Cost splits across blast + mass; no excess coupling. B is red, so its
+  // mass ships at full price — a typed twin would pay D× of it.
   expect(b.comprehension).toBe(0);
   expect(b.blast).toBeGreaterThan(0);
-  expect(b.types).toBeGreaterThan(0);
-  expect(b.cxWeight).toBe(2.33); // density 0.6 → 1 + 2·(0.6/0.9)
+  expect(b.mass).toBeCloseTo(0.2, 5); // 6 branches · (10/300) · t = 1
   // A file at its own floor carries no overhead and is omitted.
   expect(m.breakdown["/r/E.ts"]).toBeUndefined();
   // The breakdown agrees with the hotspot row for the same file.
   const hot = m.hotspots.find((h) => h.id === "/r/B.ts")!;
-  expect(b.instability).toBe(Math.round(hot.instability * 1000) / 1000);
+  expect(b.volatility).toBe(Math.round(hot.volatility * 1000) / 1000);
   expect(b.blastRadius).toBe(Math.round(hot.blastRadius * 1000) / 1000);
 });
 
 test("excess coupling in the breakdown counts only volatile imports", () => {
-  // `core` imports 15 modules that each import two shared leaves, so every
-  // import is volatile (i0 = 2/3) and the weighted fan-out clears the budget.
+  // `core` imports 15 modules that git history shows churning, so every
+  // import prices near a full edge and the weighted fan-out clears the budget.
   const edges: [string, string][] = [];
   const spec: Record<string, { loc?: number; cc?: number }> = {
     "/r/core.ts": { loc: 100, cc: 10 },
-    "/r/La.ts": {},
-    "/r/Lb.ts": {},
   };
+  const churn = new Map<string, FileChurn>();
   for (let k = 0; k < 15; k++) {
     const mod = `/r/m${k}.ts`;
     spec[mod] = {};
-    edges.push(["/r/core.ts", mod], [mod, "/r/La.ts"], [mod, "/r/Lb.ts"]);
+    edges.push(["/r/core.ts", mod]);
+    churn.set(mod, { nEff: 10, deletedPerMonth: 2 });
   }
-  const b = scoreMaintainability(graphOf(edges, facts(spec))).breakdown["/r/core.ts"]!;
+  const b = scoreMaintainability(graphOf(edges, facts(spec)), { churn }).breakdown["/r/core.ts"]!;
   expect(b.comprehension).toBeGreaterThan(0);
-  // 15 imports × i0(2/3) ≈ 10 weighted edges — above the healthy budget of 8.
+  // 15 imports × vol ≈ 0.95 — above the healthy budget of 8.
   expect(b.weightedFanout).toBeGreaterThan(8);
-  // Density 10/100 = 0.1 → the flaw cost is amplified ×1.5.
-  expect(b.cxWeight).toBe(1.5);
 });
 
 test("maintainability penalises adding a cycle to an acyclic chain", () => {
-  const spec = facts({ "/r/a.ts": {}, "/r/b.ts": {}, "/r/c.ts": {} });
+  // Branchy files keep both variants below the 100 cap so the cycle's extra
+  // blast (whole SCC LoC in every member's radius) is visible in the score.
+  const spec = () =>
+    facts({
+      "/r/a.ts": { cc: 30 },
+      "/r/b.ts": { cc: 30 },
+      "/r/c.ts": { cc: 30 },
+    });
   const chain = graphOf(
     [
       ["/r/a.ts", "/r/b.ts"],
       ["/r/b.ts", "/r/c.ts"],
     ],
-    spec,
+    spec(),
   );
   const cyclic = graphOf(
     [
@@ -1316,7 +1350,7 @@ test("maintainability penalises adding a cycle to an acyclic chain", () => {
       ["/r/b.ts", "/r/c.ts"],
       ["/r/c.ts", "/r/a.ts"],
     ],
-    spec,
+    spec(),
   );
   const acyclic = scoreMaintainability(chain);
   const withCycle = scoreMaintainability(cyclic);
@@ -1342,74 +1376,54 @@ test("maintainability does not punish a stable high-fan-in foundation", () => {
     ["/r/v4.ts", "/r/h.ts"],
     ["/r/v5.ts", "/r/h.ts"],
   ];
-  // A: H is a pure sink (imports nothing) — stable despite five importers.
+  // A: H is a pure sink with five importers and no measured churn — stable
+  // however popular it is (I₀ = 0, and no history to override it).
   const stable = scoreMaintainability(graphOf(importsH, spec()));
-  // B: same fan-in, but H now imports three *volatile* modules (each pulls its
-  // own private leaves, so their instability is high) → H becomes a volatile
-  // hub. Importing *stable* leaves instead would leave H stable (next test).
-  const volatile = scoreMaintainability(
-    graphOf(
-      [
-        ...importsH,
-        ["/r/h.ts", "/r/m1.ts"],
-        ["/r/h.ts", "/r/m2.ts"],
-        ["/r/h.ts", "/r/m3.ts"],
-        ["/r/m1.ts", "/r/m1a.ts"],
-        ["/r/m1.ts", "/r/m1b.ts"],
-        ["/r/m2.ts", "/r/m2a.ts"],
-        ["/r/m2.ts", "/r/m2b.ts"],
-        ["/r/m3.ts", "/r/m3a.ts"],
-        ["/r/m3.ts", "/r/m3b.ts"],
-      ],
-      facts({
-        "/r/h.ts": {},
-        "/r/v1.ts": {},
-        "/r/v2.ts": {},
-        "/r/v3.ts": {},
-        "/r/v4.ts": {},
-        "/r/v5.ts": {},
-        "/r/m1.ts": {},
-        "/r/m2.ts": {},
-        "/r/m3.ts": {},
-        "/r/m1a.ts": {},
-        "/r/m1b.ts": {},
-        "/r/m2a.ts": {},
-        "/r/m2b.ts": {},
-        "/r/m3a.ts": {},
-        "/r/m3b.ts": {},
-      }),
-    ),
-  );
-  // High fan-in alone barely dents the score; volatility on the same hub does.
-  expect(stable.score).toBeGreaterThan(90);
+  // B: identical shape, but git history shows H rewriting its own lines every
+  // month — a hub that REALLY changes makes every importer re-verify.
+  const volatile = scoreMaintainability(graphOf(importsH, spec()), {
+    churn: new Map([["/r/h.ts", { nEff: 12, deletedPerMonth: 5 }]]),
+  });
+  // High fan-in alone costs nothing; measured churn on the same hub does.
+  expect(stable.score).toBe(100);
   expect(volatile.score).toBeLessThan(stable.score);
 });
 
-test("importing a stable target keeps the importer stable; a volatile target does not", () => {
-  // C is imported by X and imports one target T; only T's own stability varies.
-  // Weighted fan-out means C's instability tracks what it depends on.
-  const cInstability = (
-    extra: [string, string][],
-    extraSpec: Record<string, { loc?: number; te?: number | null }>,
-  ) => {
-    const g = graphOf(
-      [["/r/x.ts", "/r/c.ts"], ["/r/c.ts", "/r/t.ts"], ...extra],
-      facts({ "/r/x.ts": {}, "/r/c.ts": {}, "/r/t.ts": {}, ...extraSpec }),
+test("volatility: deleted-lines rate saturates absolutely, floored by structure", () => {
+  // One importer, one import → I₀(c) = 0.5; the no-history floor is 0.15·I₀.
+  const shape = () =>
+    graphOf(
+      [
+        ["/r/x.ts", "/r/c.ts"],
+        ["/r/c.ts", "/r/t.ts"],
+      ],
+      facts({ "/r/x.ts": {}, "/r/c.ts": {}, "/r/t.ts": {} }),
     );
-    return scoreMaintainability(g).hotspots.find((h) => h.file === "c.ts")!.instability;
-  };
-  // T is a pure sink (stable) → importing it leaves C perfectly stable.
-  expect(cInstability([], {})).toBe(0);
-  // T imports three leaves (volatile) → importing it makes C look unstable.
-  const withVolatileT = cInstability(
-    [
-      ["/r/t.ts", "/r/l1.ts"],
-      ["/r/t.ts", "/r/l2.ts"],
-      ["/r/t.ts", "/r/l3.ts"],
-    ],
-    { "/r/l1.ts": {}, "/r/l2.ts": {}, "/r/l3.ts": {} },
-  );
-  expect(withVolatileT).toBeGreaterThan(0);
+  const volOf = (m: Maintainability) => m.hotspots.find((h) => h.file === "c.ts")!.volatility;
+
+  // No churn map: the structural floor stands and churnCoverage is null
+  // (pass off/pending).
+  const prior = scoreMaintainability(shape());
+  expect(volOf(prior)).toBeCloseTo(0.075, 10); // 0.15 · I₀ = 0.15 · 0.5
+  expect(prior.churnCoverage).toBeNull();
+
+  // The saturation scale is absolute (deleted lines/month ÷ loc, half-way at
+  // 1% of the file per month): a hub that rewrites its lines reads hot, a
+  // becalmed file falls back to the floor — never a per-repo percentile.
+  const churned = (stats: FileChurn) =>
+    scoreMaintainability(shape(), { churn: new Map([["/r/c.ts", stats]]) });
+  const hot = churned({ nEff: 40, deletedPerMonth: 2 }); // 20%/month on 10 LoC
+  const calm = churned({ nEff: 40, deletedPerMonth: 0.001 });
+  expect(volOf(hot)).toBeGreaterThan(0.9);
+  expect(volOf(calm)).toBeCloseTo(0.075, 10); // the floor holds — never below structure
+  expect(hot.volatility["/r/c.ts"]!).toBeGreaterThan(0.9); // the edge price too
+  // LoC-weighted coverage: 10 of the 30 LoC carry usable history.
+  expect(hot.churnCoverage).toBe(0.333);
+
+  // Append-only history (adds, no deletions) reads calm: deleted lines are
+  // the risk signal — growing a registry/barrel is free.
+  const appendOnly = churned({ nEff: 40, deletedPerMonth: 0 });
+  expect(volOf(appendOnly)).toBeCloseTo(0.075, 10);
 });
 
 test("comprehension charges volatile fan-out, not a wall of stable imports", () => {
@@ -1424,45 +1438,57 @@ test("comprehension charges volatile fan-out, not a wall of stable imports", () 
   const stable = scoreMaintainability(graphOf(stableEdges, facts(stableSpec)));
   expect(stable.drivers.comprehension).toBe(0);
 
-  // Same shape, but each imported module is itself volatile (pulls four private
-  // leaves), so the hub's weighted fan-out crosses the budget.
+  // Same shape, but git history shows every imported module churning — the
+  // hub's volatility-weighted fan-out crosses the budget and comprehension
+  // charges.
+  const churn = new Map<string, FileChurn>();
   const volEdges: [string, string][] = [];
   const volSpec: Record<string, { loc?: number; te?: number | null }> = { "/r/hub.ts": {} };
   for (let i = 0; i < 12; i++) {
     volEdges.push(["/r/hub.ts", `/r/mod${i}.ts`]);
     volSpec[`/r/mod${i}.ts`] = {};
-    for (let j = 0; j < 4; j++) {
-      volEdges.push([`/r/mod${i}.ts`, `/r/mod${i}_${j}.ts`]);
-      volSpec[`/r/mod${i}_${j}.ts`] = {};
-    }
+    churn.set(`/r/mod${i}.ts`, { nEff: 10, deletedPerMonth: 2 });
   }
-  const volatile = scoreMaintainability(graphOf(volEdges, facts(volSpec)));
+  const volatile = scoreMaintainability(graphOf(volEdges, facts(volSpec)), { churn });
   expect(volatile.drivers.comprehension).toBeGreaterThan(0);
 });
 
-test("maintainability penalises type errors, more when the red file is widely imported", () => {
-  // v1..v3 import h, which imports the shared util u — so u is reachable from
-  // (imported by) the whole graph, while a view v1 is imported by nobody.
-  const edges: [string, string][] = [
-    ["/r/v1.ts", "/r/h.ts"],
-    ["/r/v2.ts", "/r/h.ts"],
-    ["/r/v3.ts", "/r/h.ts"],
-    ["/r/h.ts", "/r/u.ts"],
-  ];
-  const ids = { "/r/h.ts": {}, "/r/u.ts": {}, "/r/v1.ts": {}, "/r/v2.ts": {}, "/r/v3.ts": {} };
-  const green = scoreMaintainability(graphOf(edges, facts(ids)));
-  // One red file, same LoC, at a leaf view (blast radius 0) vs the shared util (high blast radius).
-  const redLeaf = scoreMaintainability(graphOf(edges, facts({ ...ids, "/r/v1.ts": { te: 1 } })));
-  const redUtil = scoreMaintainability(graphOf(edges, facts({ ...ids, "/r/u.ts": { te: 1 } })));
+test("typed discount: red files pay full price, red dependents undo the blast discount", () => {
+  // Own flaws: the same god file typed vs red — typed pays D (= 1/5) of it.
+  const godFacts = (te: number) => facts({ "/r/god.ts": { loc: 300, cc: 50, te } });
+  const typed = scoreMaintainability(graphOf([], godFacts(0)));
+  const red = scoreMaintainability(graphOf([], godFacts(3)));
+  expect(red.costLoc - red.floorLoc).toBe(5 * (typed.costLoc - typed.floorLoc));
+  expect(red.score).toBeLessThan(typed.score);
 
-  // A type error lowers the score; the same error in a widely-imported file
-  // lowers it more (blast radius amplifies the type term).
-  expect(redLeaf.score).toBeLessThan(green.score);
-  expect(redUtil.score).toBeLessThan(redLeaf.score);
-  expect(redUtil.drivers.types).toBeGreaterThan(0);
-  expect(green.drivers.types).toBe(0);
-  expect(green.typeHealth).toBe(1);
-  expect(redUtil.typeHealth).toBeLessThan(1);
+  // Blast: a churning foundation with four dependents — the more of the
+  // dependent LoC is red, the less the compiler carries (u_dep rises).
+  const shape = (redDeps: number) => {
+    const spec: Record<string, { te?: number }> = { "/r/f.ts": {} };
+    const edges: [string, string][] = [];
+    for (let i = 0; i < 4; i++) {
+      spec[`/r/d${i}.ts`] = { te: i < redDeps ? 1 : 0 };
+      edges.push([`/r/d${i}.ts`, "/r/f.ts"]);
+    }
+    return scoreMaintainability(graphOf(edges, facts(spec)), {
+      churn: new Map([["/r/f.ts", { nEff: 20, deletedPerMonth: 5 }]]),
+    });
+  };
+  const greenDeps = shape(0);
+  const halfRed = shape(2);
+  const allRed = shape(4);
+  const blastOf = (m: Maintainability) => m.breakdown["/r/f.ts"]!.blast;
+  expect(blastOf(halfRed)).toBeGreaterThan(blastOf(greenDeps));
+  expect(blastOf(allRed)).toBeGreaterThan(blastOf(halfRed));
+  // Fully red dependents = full price: D + (1−D)·1 = 1, i.e. 5× the typed run.
+  expect(blastOf(allRed)).toBeCloseTo(blastOf(greenDeps) * 5, 0);
+  expect(allRed.score).toBeLessThan(greenDeps.score);
+
+  // A red file with no flaws costs nothing — types discount flaws, they are
+  // not a penalty of their own.
+  const flatRed = scoreMaintainability(graphOf([], facts({ "/r/flat.ts": { loc: 400, te: 9 } })));
+  expect(flatRed.score).toBe(100);
+  expect(flatRed.typeHealth).toBe(0);
 });
 
 test("maintainability reports typeHealth null when the type pass is off", () => {
@@ -1472,30 +1498,41 @@ test("maintainability reports typeHealth null when the type pass is off", () => 
   );
   const result = scoreMaintainability(graph);
   expect(result.typeHealth).toBeNull();
-  expect(result.drivers.types).toBe(0);
 });
 
-test("scoreTypeRisk:false makes the score purely structural, keeping typed %", () => {
-  // A red foundation everything imports — the worst case for the type term.
+test("scoreTypeRisk:false scores the post-migration structural ceiling", () => {
+  // A red branch-dense foundation everything imports — the worst case.
   const edges: Array<[string, string]> = [
     ["/r/a.ts", "/r/red.ts"],
     ["/r/b.ts", "/r/red.ts"],
     ["/r/c.ts", "/r/red.ts"],
   ];
   const redFacts = () =>
-    facts({ "/r/red.ts": { te: 5 }, "/r/a.ts": {}, "/r/b.ts": {}, "/r/c.ts": {} });
-  const greenFacts = () => facts({ "/r/red.ts": {}, "/r/a.ts": {}, "/r/b.ts": {}, "/r/c.ts": {} });
+    facts({
+      "/r/red.ts": { loc: 300, cc: 40, te: 5 },
+      "/r/a.ts": {},
+      "/r/b.ts": {},
+      "/r/c.ts": {},
+    });
+  const greenFacts = () =>
+    facts({
+      "/r/red.ts": { loc: 300, cc: 40 },
+      "/r/a.ts": {},
+      "/r/b.ts": {},
+      "/r/c.ts": {},
+    });
 
   const scored = scoreMaintainability(graphOf(edges, redFacts()));
   const structural = scoreMaintainability(graphOf(edges, redFacts()), { scoreTypeRisk: false });
   const green = scoreMaintainability(graphOf(edges, greenFacts()));
 
-  // The red file drags the default score; excluding type risk restores the
-  // structural score exactly — same graph, red files cost nothing.
-  expect(scored.score).toBeLessThan(green.score);
+  // "As if the migration were finished": treating every file as typed
+  // reproduces the all-green score exactly; with type risk on, the red
+  // file's flaws price at full cost (1/D more).
   expect(structural.score).toBe(green.score);
   expect(structural.costLoc).toBe(green.costLoc);
-  expect(structural.drivers.types).toBe(0);
+  expect(scored.costLoc).toBeGreaterThan(green.costLoc);
+  expect(scored.score).toBeLessThan(green.score);
   expect(structural.hotspots).toEqual(green.hotspots);
   // Typing *progress* still reports — it is information, not a cost.
   expect(structural.typeHealth).toBeLessThan(1);
@@ -1524,11 +1561,11 @@ test("maintainability is size-invariant across disjoint identical subgraphs", ()
   expect(Math.abs(triple.score - one.score)).toBeLessThanOrEqual(1);
 });
 
-// --- Phase 6: score projections (docs/symbol-resolution.md §2) ------------------
+// --- score projections (docs/maintainability-score.md "Edge projections") ------
 
 test("lazy route registries charge no comprehension; targets keep fan-in and blast", () => {
-  // A router registering N pages (each volatile: it imports a util that in
-  // turn imports deeper), once via lazy glob edges and once synchronously.
+  // A router registering N churning pages (git history shows each rewriting),
+  // once via lazy glob edges and once synchronously.
   const build = (lazy: boolean, pages: number) => {
     const edges: Array<[string, string, { lazy?: boolean }]> = [];
     const spec: Record<string, { loc?: number }> = {
@@ -1536,14 +1573,16 @@ test("lazy route registries charge no comprehension; targets keep fan-in and bla
       "/r/util.ts": {},
       "/r/deep.ts": {},
     };
+    const churn = new Map<string, FileChurn>();
     edges.push(["/r/util.ts", "/r/deep.ts", {}]);
     for (let i = 0; i < pages; i++) {
       const page = `/r/pages/p${i}.ts`;
       spec[page] = {};
       edges.push(["/r/router.ts", page, lazy ? { lazy: true } : {}]);
       edges.push([page, "/r/util.ts", {}]);
+      churn.set(page, { nEff: 10, deletedPerMonth: 2 });
     }
-    return scoreMaintainability(graphOf(edges, facts(spec)));
+    return scoreMaintainability(graphOf(edges, facts(spec)), { churn });
   };
 
   // 20 pages blow past the healthy fan-out budget when counted synchronously —
@@ -1567,10 +1606,10 @@ test("lazy route registries charge no comprehension; targets keep fan-in and bla
   expect(util(lazySmall).blastRadius).toBeGreaterThan(0);
 });
 
-test("type-only dependents free the target structurally but still carry type risk", () => {
+test("type-only dependents free the target structurally — the compiler re-verifies them", () => {
   // A red types module with three type-only consumers, vs the same shape with
-  // value consumers. The module imports a volatile dep so its instability is
-  // non-zero when structural fan-in exists.
+  // value consumers. The module imports a dep so its instability is non-zero
+  // when structural fan-in exists.
   const build = (type: boolean) => {
     const flags = type ? { type: true } : {};
     return scoreMaintainability(
@@ -1604,10 +1643,6 @@ test("type-only dependents free the target structurally but still carry type ris
   expect(hot(valued).fanIn).toBe(3);
   expect(hot(valued).blastRadius).toBeGreaterThan(0);
   expect(typed.costLoc).toBeLessThan(valued.costLoc);
-
-  // Type risk: a broken type propagates to exactly its type-dependents — the
-  // types term is amplified by the SAME radius in both variants.
-  expect(typed.breakdown["/r/types.ts"]!.types).toBe(valued.breakdown["/r/types.ts"]!.types);
 });
 
 test("cycles lists structural SCC members; type-only backlinks are not cycles", () => {
@@ -1638,4 +1673,200 @@ test("cycles lists structural SCC members; type-only backlinks are not cycles", 
   );
   expect(typeBack.cycles).toEqual([]);
   expect(typeBack.cycleLoc).toBe(0);
+});
+
+// --- churn estimation (git history → volatility input) ----------------------
+
+const DAY = 86_400;
+
+test("parseNumstatLog parses commits, renames and binary rows", () => {
+  const log = [
+    "\x011700000000",
+    "5\t3\tsrc/app.ts",
+    "-\t-\tassets/logo.png",
+    "",
+    "\x011699000000",
+    "0\t0\tsrc/{old.ts => new.ts}",
+    "2\t1\tlib.ts => moved.ts",
+    "1\t1\t{ => src}/root.ts",
+    "noise line without tabs",
+  ].join("\n");
+  const commits = parseNumstatLog(log);
+  expect(commits).toHaveLength(2);
+  expect(commits[0]!.time).toBe(1_700_000_000);
+  expect(commits[0]!.files).toEqual([
+    { path: "src/app.ts", deleted: 3, renamedFrom: null },
+    { path: "assets/logo.png", deleted: 0, renamedFrom: null },
+  ]);
+  expect(commits[1]!.files).toEqual([
+    { path: "src/new.ts", deleted: 0, renamedFrom: "src/old.ts" },
+    { path: "moved.ts", deleted: 1, renamedFrom: "lib.ts" },
+    { path: "src/root.ts", deleted: 1, renamedFrom: "root.ts" },
+  ]);
+});
+
+test("estimateChurn chains renames so old history lands on the current path", () => {
+  const t = (daysAgo: number) => 1_700_000_000 - daysAgo * DAY;
+  const commits = parseNumstatLog(
+    [
+      `\x01${t(1)}`,
+      "0\t9\tb.ts", // newest: rewrites the current name
+      `\x01${t(2)}`,
+      "0\t0\ta.ts => b.ts", // rename record
+      `\x01${t(3)}`,
+      "0\t9\ta.ts", // oldest: rewrites the pre-rename name
+    ].join("\n"),
+  );
+  const churn = estimateChurn(commits, new Map([["b.ts", 10]]));
+  const b = churn.get("b.ts")!;
+  // All three touches accrue to the present-day path…
+  expect(b.nEff).toBe(3);
+  // …and both 9-line deletions land there: 18 deleted / 18 months.
+  expect(b.deletedPerMonth).toBeCloseTo(1, 10);
+  expect(churn.has("a.ts")).toBe(false);
+});
+
+test("estimateChurn damps bulk commits and drops codemods", () => {
+  const loc = new Map([["f.ts", 100]]);
+  // A k-file commit carries touch weight min(1, √(30/k)).
+  const bulk = (k: number) => {
+    const rows = ["\x011700000000", "10\t18\tf.ts"];
+    for (let i = 1; i < k; i++) {
+      rows.push(`10\t18\tother${i}.ts`);
+    }
+    return parseNumstatLog(rows.join("\n"));
+  };
+  // 120 files → weight √(30/120) = 0.5: half the observation, half the lines.
+  const damped = estimateChurn(bulk(120), loc).get("f.ts")!;
+  expect(damped.nEff).toBeCloseTo(0.5, 5);
+  expect(damped.deletedPerMonth).toBeCloseTo(0.5, 5); // 0.5 · 18 / 18 months
+  // Small commits carry full weight; deleted lines only (adds are free).
+  const small = estimateChurn(bulk(1), loc).get("f.ts")!;
+  expect(small.nEff).toBe(1);
+  expect(small.deletedPerMonth).toBe(1);
+  // >200-file codemods carry no churn signal at all.
+  expect(estimateChurn(bulk(201), loc).get("f.ts")).toBeUndefined();
+});
+
+test("collectChurn attributes files to their nearest repo (submodule boundary)", async () => {
+  // /app is the parent repo; /app/sub is a submodule — `git log` at /app
+  // NEVER reports files inside it, so per-file repo resolution is load-bearing.
+  const now = Date.now();
+  const t = Math.floor(now / 1000 - DAY);
+  const gitCalls: string[][] = [];
+  const host = {
+    async runGit(args: string[]) {
+      gitCalls.push(args);
+      if (args[2] === "rev-parse") {
+        return args[1]!.startsWith("/app/sub") ? "/app/sub\n" : "/app\n";
+      }
+      if (args.includes("log")) {
+        return args[1] === "/app/sub" ? `\x01${t}\n9\t0\tlib.ts\n` : `\x01${t}\n9\t0\tsrc/a.ts\n`;
+      }
+      throw new Error(`unexpected git ${args.join(" ")}`);
+    },
+  };
+  const churn = await collectChurn(
+    host,
+    new Map([
+      ["/app/src/a.ts", 10],
+      ["/app/sub/lib.ts", 10],
+    ]),
+  );
+  expect(churn.get("/app/src/a.ts")!.nEff).toBeGreaterThan(0.9);
+  expect(churn.get("/app/sub/lib.ts")!.nEff).toBeGreaterThan(0.9);
+  // One log per involved repo, each run at ITS toplevel.
+  const logs = gitCalls.filter((a) => a.includes("log")).map((a) => a[1]);
+  expect(logs.sort()).toEqual(["/app", "/app/sub"]);
+});
+
+test("engine churn pass blends git history into volatility and reports coverage", async () => {
+  // 15 recent commits rewriting App.vue — main.ts and friends stay untouched.
+  const nowSec = Math.floor(Date.now() / 1000);
+  const rows: string[] = [];
+  for (let i = 0; i < 15; i++) {
+    rows.push(`\x01${nowSec - (i + 1) * DAY}`, "8\t4\tsrc/App.vue", "");
+  }
+  const gitLog = rows.join("\n");
+  const churnHost: AnalysisHost = {
+    ...fakeHost(),
+    async runGit(args) {
+      if (args[0] === "rev-parse") {
+        return "abc123\n"; // HEAD probe
+      }
+      if (args[2] === "rev-parse") {
+        return "/app\n"; // per-directory toplevel
+      }
+      return gitLog;
+    },
+  };
+  const run = async (churn: boolean, host: AnalysisHost) => {
+    const engine = new AnalysisEngine(host, { churn });
+    await expect.poll(async () => (await engine.getGraph()).complete, { timeout: 2000 }).toBe(true);
+    return (await engine.getGraph()).maintainability;
+  };
+  const off = await run(false, fakeHost());
+  const on = await run(true, churnHost);
+
+  // Churn off → coverage null, volatility is the structural prior.
+  expect(off.churnCoverage).toBeNull();
+  // Churn on → App.vue's measured churn drags its volatility above the prior;
+  // coverage reports the measured fraction honestly (only App.vue has history).
+  expect(on.churnCoverage).toBeGreaterThan(0);
+  expect(on.churnCoverage!).toBeLessThan(1);
+  const app = "/app/src/App.vue";
+  expect(on.volatility[app]!).toBeGreaterThan(off.volatility[app]!);
+});
+
+// --- crawl coverage + auto-import manifests ---------------------------------
+
+test("engine reports crawl coverage with unreached source files", async () => {
+  const files = { ...FILES, "/app/src/orphan.ts": "export const dead = 1;\n" };
+  const base = fakeHost(undefined, files);
+  const host: AnalysisHost = {
+    ...base,
+    glob: async (patterns) =>
+      patterns.includes("**/*.vue") ? Object.keys(files).filter((f) => /\.(vue|ts)$/.test(f)) : [],
+  };
+  const engine = new AnalysisEngine(host);
+  const graph = await engine.getGraph();
+  // The orphan is visible to the readout but enters neither floor nor cost.
+  expect(graph.coverage.unreached).toEqual([{ file: "src/orphan.ts", loc: 1 }]);
+  expect(graph.coverage.graphFiles).toBe(graph.full.nodes.length);
+  expect(graph.coverage.sourceFiles).toBe(graph.coverage.graphFiles + 1);
+  expect(graph.coverage.sourceLoc).toBe(graph.coverage.graphLoc + 1);
+  expect(graph.full.nodes.some((n) => n.file === "src/orphan.ts")).toBe(false);
+});
+
+test("auto-import manifest targets are crawled as nodes with no importer edges", async () => {
+  const files: Record<string, string> = {
+    "/app/index.html": '<script type="module" src="/src/main.ts"></script>',
+    "/app/src/main.ts": "export const app = 1;\n",
+    "/app/components.d.ts":
+      "declare module 'vue' {\n" +
+      "  export interface GlobalComponents {\n" +
+      "    Auto: typeof import('./src/components/Auto.vue')['default'];\n" +
+      "  }\n" +
+      "}\n",
+    "/app/src/components/Auto.vue":
+      '<script setup lang="ts">\nimport { util } from "../util";\n</script>\n' +
+      "<template><p>{{ util }}</p></template>\n",
+    "/app/src/util.ts": "export const util = 1;\n",
+  };
+  const base = fakeHost(undefined, files);
+  const host: AnalysisHost = {
+    ...base,
+    glob: async (patterns) =>
+      patterns.includes("**/components.d.ts") ? ["/app/components.d.ts"] : [],
+  };
+  const crawl = await crawlGraph(host, ["/app/src/main.ts"]);
+  expect(crawl.autoImportManifests).toEqual(["/app/components.d.ts"]);
+  // The manifest target joins the graph (no longer reads as dead code) and its
+  // own imports are followed — but nothing points AT it: the auto-import
+  // binding sites stay invisible (the banner's job).
+  const ids = crawl.files.map((f) => f.id);
+  expect(ids).toContain("/app/src/components/Auto.vue");
+  expect(ids).toContain("/app/src/util.ts");
+  expect(crawl.nodes).toContain("/app/src/components/Auto.vue");
+  expect(crawl.moduleEdges.some((e) => e.to === "/app/src/components/Auto.vue")).toBe(false);
 });

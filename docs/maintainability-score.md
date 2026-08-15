@@ -1,260 +1,362 @@
 # The maintainability score
 
 `vite-plugin-tsmigrate` reduces a codebase to a single **maintainability
-score** in `[0, 100]` (higher is better), shown at the top of the tool panel
-and served on `GET /api/graph` as `ComponentGraph.maintainability`. This
-document is the full model: what it measures, why each term is there, and what
-it deliberately cannot see.
+score** (capped at 100, open-ended below zero; higher is better), shown at the
+top of the tool panel and served on `GET /api/graph` as
+`ComponentGraph.maintainability`. This document is the full model: what it
+measures, why each term is there, how the scale is anchored, and what it
+deliberately cannot see.
 
 ## The idea: the cost of a _safe_ change
 
-The only honest definition of maintainability is operational: **when I change a
-file, how much must I understand, how much can I break, and how much does the
-compiler help me?** A maintainable codebase keeps those small. So we model the
-expected cost of a change and invert it.
+The only honest definition of maintainability is operational: **when I change
+a file, how much must I understand, how much can I break, and how much does
+the compiler help me?** A maintainable codebase keeps those small. So we model
+the expected cost of a change, compare it to the irreducible floor, and map
+the overhead ratio onto a criterion-referenced scale.
 
 We express each module's cost in **LoC-equivalent units** (a "unit" is the
 effort of reading one line once):
 
 ```math
-\mathrm{cost}(m) \;=\; \mathrm{loc}(m)\cdot\Bigl(\underbrace{1}_{\text{read}} + W(m)\bigl(\underbrace{\alpha\,\max(0,\,C_e^{w}(m)-K)}_{\text{comprehension}} + \underbrace{\beta\,I(m)\,r(m)}_{\text{blast}} + \underbrace{\mathrm{type}(m)}_{\text{type risk}}\bigr)\Bigr)
+\mathrm{cost}(m) \;=\; \underbrace{\mathrm{loc}(m)}_{\text{read}} \;+\; t(m)\cdot\bigl(\underbrace{\mathrm{comp}(m)}_{\text{comprehension}} + \underbrace{\mathrm{mass}(m)}_{\text{mass}}\bigr) \;+\; \bigl(D + (1{-}D)\,u_{\text{dep}}(m)\bigr)\cdot\underbrace{\mathrm{blast}(m)}_{\text{blast}}
 ```
 
 ```math
-\mathrm{type}(m) = \begin{cases} \gamma\,\bigl(1 + \delta\,r_{\text{type}}(m)\bigr) & m \text{ has a type error} \\ 0 & \text{otherwise} \end{cases}
+\mathrm{comp}(m) = \mathrm{loc}(m)\,\alpha\,\max(0,\,C_e^{w}(m)-K),\quad
+\mathrm{blast}(m) = \mathrm{loc}(m)\,\beta\,\mathrm{vol}(m)\,r(m),\quad
+\mathrm{mass}(m) = \kappa\,\mathrm{cc}(m)\bigl(\tfrac{\mathrm{loc}(m)}{L_0}\bigr)^{p}
 ```
 
-The **complexity weight** $W(m)=1+\lambda\,\dfrac{\rho(m)}{\rho(m)+D_0}$ scales the
-_flaw_ terms by the file's cyclomatic-complexity density
-$\rho(m)=\mathrm{cc}(m)/\mathrm{loc}(m)$ (decision points per maintainable line).
-Complexity is a **cost amplifier, not a standalone penalty**: a file with no
-coupling or type debt costs $\mathrm{loc}(m)$ however branch-dense it is ($W$
-multiplies only the overhead), and a simple file ($\rho\to0$, $W\to1$) is scored
-exactly as before. Dense logic makes the _real_ flaws — coupling, ripple, type
-errors — costlier to change safely.
+$t(m) = 1$ when $m$ carries its own type errors ("red"), else the **typed
+discount** $D$; $u_{\text{dep}}(m)$ is the red-LoC share of $m$'s transitive
+structural dependents (see [Types](#types--a-discount-not-a-penalty)).
 
-The whole-codebase cost is the sum, and the score normalises it against the
-**floor** — the irreducible cost of reading every file once, with no excess
-coupling and no type errors:
+The whole-codebase cost is the sum; the **floor** is the cost of reading every
+file once (`Σ loc`); and the **overhead ratio**
 
 ```math
-\mathrm{floor} = \sum_m \mathrm{loc}(m),
-\qquad
-\mathrm{cost} = \sum_m \mathrm{cost}(m),
-\qquad
-\boxed{\;\text{score} = 100\cdot\frac{\mathrm{floor}}{\mathrm{cost}}\;}
+\Omega = \frac{\mathrm{cost} - \mathrm{floor}}{\mathrm{floor}}
 ```
 
-A clean, fully-typed, modular codebase approaches 100; each unit of _excess_
-coupling, structural blast, or type debt drives it down.
+is what the score maps. Throughout, $\mathrm{loc}(m)$ is **maintainable**
+source lines: the file with its `<style>` and `<svg>` blocks removed.
 
-Throughout, $\mathrm{loc}(m)$ is **maintainable** source lines: the file
-with its `<style>` and `<svg>` blocks removed. CSS and inline vector data are
-not type-checked logic and are not edited line-by-line, so a big icon or a
-large style block does not inflate a file's weight (nor its graph node size).
+## The scale: criterion-referenced, two legible constants
+
+```math
+\boxed{\;\text{score} = \min\Bigl(100,\; 30 - 25 \cdot \log_2 \tfrac{\Omega}{\Omega_{\text{typ}}}\Bigr)\;}
+```
+
+- **Ω_typ = 0.10** — the overhead ratio of a _typical production Vue app_,
+  pinned to score **30**. The scale is criterion-referenced: a quality
+  standard defines it, and the average project is allowed (expected) to fail.
+  A norm-referenced scale — median project = 50 — would hand half the world a
+  passing grade by construction, which is exactly the dishonest encouragement
+  this model avoids.
+- **Slope: 25 points per doubling** of Ω — halve the overhead for +25, double
+  it for −25 (Weber–Fechner, but sayable out loud).
+- The **100 cap** is principled: Ω = 0 — changes cost only the reading — is a
+  true floor. The **bottom is open**: negatives are reserved for genuine
+  disasters.
+- **Types live inside Ω as a discount on every flaw** (never a separate
+  penalty term or post-mapping deduction) — the compiler carries most of the
+  re-verification wherever code is typed, so a fully-typed repo prices every
+  flaw at $D$ and a fully-red one at full price.
+
+Archetypes under this anchoring (from the calibration analysis):
+
+| archetype                      | Ω        | score     |
+| ------------------------------ | -------- | --------- |
+| tiny clean app                 | ≤0.013   | 100 (cap) |
+| rare well-factored OSS         | ~0.02    | ~88       |
+| decent, disciplined            | 0.06     | 48        |
+| **typical production Vue app** | **0.10** | **30**    |
+| legacy mess                    | 0.25     | −3        |
+| really bad                     | 0.5      | −28       |
+
+## Volatility — the shared change-likelihood term
+
+Both remaining structural terms price change against **volatility**
+vol ∈ [0, 1]: how likely a module is to actually change. The pinned,
+production-validated form:
+
+```math
+x(m) = \frac{\text{damped deleted lines/month}}{\mathrm{loc}(m)},
+\qquad
+\mathrm{vol}(m) = \max\Bigl(\frac{x(m)}{x(m) + x_{1/2}},\; f\cdot I_0(m)\Bigr)
+```
+
+- **Deleted lines only** (from `git log --numstat`), never added lines:
+  appending to a registry/barrel/config is risk-free — modifying existing
+  lines is risk. Validated on production: vben's icon barrel (+60/−2 history)
+  reads vol ≈ 0, while hot hubs that rewrite their lines keep vol 0.6–0.8.
+  An added-lines signal marked the barrel fully volatile.
+- **Absolute saturation**: half-volatile at $x_{1/2}$ = 1% of the file's
+  lines deleted per month — a **fixed** scale, deliberately not a per-repo
+  percentile, which would saturate every repo's hot quartile and destroy the
+  cross-repo criterion referencing the whole mapping is built on.
+- **Hygiene** (in `src/analysis/churn.ts`): one `git log --numstat -M` pass
+  per repository over a fixed 18-month window; **rename chaining** (`-M`,
+  walked newest → oldest so pre-rename churn lands on the present path);
+  **bulk damping** — a commit touching $k$ files carries weight
+  $\min(1, \sqrt{30/k})$, and commits above 200 files (formatting passes,
+  codemods) are dropped entirely (their renames still chain).
+- **Structural floor**: with thin or no history the fallback is
+  $f \cdot I_0$, where $I_0 = C_e/(C_e+C_a)$ is raw **Martin instability**
+  and $f = 0.15$ shrinks it hard — presumed volatility is weak evidence, and
+  an unshrunk structural prior drowned the other terms on history-less repos.
+  History-less codebases still _order_ by structure; they just don't read as
+  if every mid-layer module churned daily.
+- Recency decay and age-corrected rates are deliberately **absent** — an age
+  denominator saturated shallow-clone fixtures (the vben=22 incident) and
+  neither was part of the validated runs. Re-validate against the regression
+  fixtures before reintroducing either.
+
+**Multi-repo resolution**: each file is attributed to its nearest enclosing
+git work tree (`git -C <dir> rev-parse --show-toplevel`, walk-up cached) — a
+submodule is a single gitlink entry in its parent, so a log at the parent root
+would silently report nothing for files inside it. The panel's **churn
+measured** readout is the LoC fraction with usable history; the rest runs on
+the floor.
+
+Volatility replaces the old model's Martin-instability terms outright. The old
+blast term $I\cdot r$ was structurally self-canceling: high fan-in drives
+$r$ up but $I$ down, so a weekly-edited hub with 400 importers scored **zero**
+blast — the exact files changes are feared in. Measured churn breaks that
+anti-correlation.
+
+## The graph: symbol-resolved edges
+
+All quantities come from the **full module graph** (`.vue` + `.ts`), whose
+edges are **symbol-resolved definition edges**: an import contributes an edge
+to the module that _defines_ the symbol it uses, resolved through re-export
+chains, so barrels and re-export hubs are transparent instead of reading as
+false hubs. Each import form is classified; only `value`/`type` bindings are
+symbol-narrowed — the rest stay safe whole-module edges:
+
+| Source form                              | Narrowed to definers?                                                                                                                                                    |
+| ---------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `import { X }`, `import X` (default)     | yes — through re-exports, incl. `export * from` per name                                                                                                                 |
+| `import type { X }`, `import { type X }` | yes (type-only; see projections below)                                                                                                                                   |
+| `import * as ns from "s"`                | partial — static member reads (`ns.X`, `ns["X"]`) narrow; any escape (`f(ns)`, spread, dynamic key, shadowing) or a `.vue` file (template blind spot) stays whole-module |
+| `import "s"`, `import(...)`, glob        | no — running the module is the dependency                                                                                                                                |
+
+**Design principle: never lose an edge.** Whole-module over-approximates (may
+add an unused edge, never misses one); narrowing risks the opposite — a missed
+edge means an artificially _low_ blast radius, which in a maintainability tool
+is the dangerous direction (false confidence). Narrowing happens only when
+provably safe, and an empty resolution (external re-export target, unparseable
+module, unfound name) falls back to a whole-module edge to the direct target —
+never to nothing. Whole-module edges point at the module itself, never an
+expansion of its exports: a 66-barrel side-effect entry keeps 66 edges, not
+370 fabricated ones.
 
 ## The terms
 
-All quantities come from the **full module graph** (`.vue` + `.ts`), whose
-edges are **symbol-resolved definition edges** (see
-[symbol-resolution.md](./symbol-resolution.md)): a value/type import points at
-the module that _defines_ the imported symbol — barrels and re-export hubs are
-transparent — while whole-module dependencies (side-effect, namespace, dynamic
-imports) are a single edge to the module itself. An edge $u \to v$ means "$u$
-depends on $v$'s definition".
+All terms are computed over these edges, through per-kind projections.
 
 ### Edge projections
 
-Edges feed the terms through **per-kind projections**
-([symbol-resolution.md §2](./symbol-resolution.md)):
+Edges feed the terms through **per-kind projections**:
 
 - **Type-only edges** (`import type`, `import { type X }`) leave every
-  structural term — $C_e^{w}$, $C_a$, $I$ and the blast radius $r$. A
-  type-only dependent is re-verified by the **compiler**, not by a human
-  re-reasoning about behaviour; type-only importers make a module _freer_ to
-  change. They still carry type risk: the radius in the type term,
-  $r_{\text{type}}$, is reachability over **all** edges, so a broken type
-  propagates to precisely its type-dependents.
+  structural term — $C_e^{w}$, $C_a$, and the blast radius $r$. A type-only
+  dependent is re-verified by the **compiler**, not by a human re-reasoning
+  about behaviour.
 - **Lazy edges** (`import(...)`, `import.meta.glob`) leave only the
-  **importer's** $C_e^{w}$ (and so its instability numerator): a route table
-  globbing 200 pages is a declarative registry, not comprehension load. The
-  targets keep their fan-in, reachability and blast radius — a broken page
-  still breaks navigation.
-- Everything else — including synchronous side-effect imports, which execute
-  at module load — counts everywhere.
-- Cycle detection runs on the **structural** projection: `import type`
-  back-edges are legal TS and no runtime hazard, so a cycle held together
-  only by type edges does not exist for the score.
+  **importer's** $C_e^{w}$: a route table globbing 200 pages is a declarative
+  registry, not comprehension load. The targets keep their fan-in,
+  reachability and blast radius — a broken page still breaks navigation.
+- Everything else — including synchronous side-effect imports — counts
+  everywhere.
+- Cycle detection runs on the **structural** projection: a cycle held
+  together only by `import type` edges does not exist for the score.
 
 ### Comprehension — $`\alpha\,\max(0,\,C_e^{w}(m)-K)`$
 
-$`C_e^{w}(m)=\sum_{d\,\in\,\text{imports}(m)} I_0(d)`$ is the **volatility-weighted
-fan-out**: each import is counted by how unstable its target is. $I_0(d)$ is the
-raw Martin instability of the imported module (see [Blast](#blast--betaimr)),
-computed in a first pass. Depending on a **stable** module — an icon or
-constants barrel, a pure types module ($I_0 \approx 0$) — is therefore nearly
-free, while depending on a **volatile** one costs close to a full edge. Only
-weighted fan-out **above a healthy budget** $K$ costs anything, so ordinary
-modularity is free and a file that wires together many _volatile_ modules pays
-for the excess. This refines the naive "charge every import equally" model
-(under which a normal codebase, average fan-out 3–5, could never score above
-~65) with a second refinement: importing seven icons is not the same as
-importing seven churning stores.
+$`C_e^{w}(m)=\sum_{d\,\in\,\text{imports}(m)} \mathrm{vol}(d)`$ is the
+**volatility-weighted fan-out**: each synchronous value import is priced by
+how volatile its target is. Depending on a **stable** module — an icon or
+constants barrel that never changes — is nearly free, while depending on a
+churning store costs close to a full edge. Only weighted fan-out **above a
+healthy budget** $K$ costs anything, so ordinary modularity is free.
 
-### Blast — $`\beta\,I(m)\,r(m)`$
+### Blast — $`\beta\,\mathrm{vol}(m)\,r(m)`$
 
-This is the cost of _behavioural_ ripple: change a widely-depended-upon module
-and you must re-reason about, re-review, and re-test everything downstream. It
-is deliberately **not** raw fan-in — a utility that 500 modules import but that
-never itself changes costs nothing. Blast is the product of two bounded
-factors:
+The cost of _behavioural_ ripple: change a widely-depended-upon module and you
+must re-reason about, re-review, and re-test everything downstream. It is the
+product of the module's **measured volatility** and its **blast radius**
+$r(m)$ — the fraction of the codebase's LoC that transitively imports $m$,
+computed on the structural projection over the graph's strongly-connected
+condensation. An import **cycle** folds its entire LoC into every member's
+blast radius (cycle members are mutual dependents), so a cycle is penalised
+_through_ blast rather than by an ad-hoc constant. A stable foundation is
+never punished for being popular; a hub that measurably churns with the
+codebase downstream finally costs what it feels like.
 
-- **Instability** $I(m) = \dfrac{C_e^{w}(m)}{C_e^{w}(m) + C_a(m)} \in [0, 1]$,
-  where $C_a$ is the **afferent coupling** (direct importers) and $C_e^{w}$ the
-  volatility-weighted fan-out from [Comprehension](#comprehension--alphamax0-cewm-k).
-  This is Robert Martin's instability made **dependency-aware**: the raw
-  $I_0 = C_e/(C_e+C_a)$ (used only as the first-pass edge weight) is Martin's
-  original. A pure sink ($C_e = 0$, e.g. a leaf constant) has $I = 0$ and
-  contributes **no** blast however many importers it has — the
-  Stable-Dependencies Principle, and why a stable foundation is not punished for
-  being popular. Weighting extends the same principle to the importer: a module
-  that imports only _stable_ code stays stable itself, so `import { … } from
-'@vben/icons'` never inflates the consumer's instability.
+### Mass — $`\kappa\,\mathrm{cc}(m)\,(\mathrm{loc}(m)/L_0)^p`$
 
-- **Blast radius** $r(m) = \dfrac{\text{LoC transitively importing } m}{\sum_k \mathrm{loc}(k)} \in [0, 1]$
-  — the fraction of the codebase that would need re-verifying if $m$'s
-  behaviour changed, computed on the structural projection (value edges,
-  sync + lazy). Blast radius is computed over the graph's strongly-connected
-  condensation, so an import **cycle** folds its entire LoC into every member's
-  blast radius (cycle members are mutual dependents). A cycle is therefore
-  penalised _through_ blast rather than by an ad-hoc constant.
+Complexity is a **first-class cost that escalates with file size**: each
+decision point costs more the bigger the file it is buried in. A branch in a
+150-line component is half price; a branch in a 1,400-line composable costs
+4.7×. **Splitting a god file genuinely lowers the score.**
+$\mathrm{cc}(m)$ counts the script's decision points (`if`, `?:`, loops,
+`catch`, non-default `case`, `&&`/`||`/`??` — from the oxc AST) **plus the
+template's branch directives** (`v-if`/`v-else-if`/`v-for`/`v-show`) — a
+`v-if`-dense component with a flat script is real branching load. cc-gating
+the size escalator keeps prose and flat declaration files free (legal text,
+URL tables, icon data) however long they are.
 
-### Type risk — $`\gamma\,(1 + \delta\,r_{\text{type}}(m))`$ for red files
+### Types — a discount, not a penalty
 
-This is where type errors enter the score, as a **first-class term** — the
-graph is a TypeScript-migration view, and the score must track red → green.
-Every file that carries at least one type error costs $\gamma$ extra directly
-(so the score responds to the _amount_ of red code, even in leaves that nothing
-imports), and that cost is **amplified by the type-risk radius**
-$r_{\text{type}}$ (reachability over _all_ edges, type-only included — see
-[Edge projections](#edge-projections)) via $\delta$: a bad type in a
-foundational module the whole codebase imports is far worse than one in an
-isolated leaf.
+Types are a cost **discount on every flaw**, not a term of their own: the
+compiler carries most of the re-verification wherever code is typed. Per
+file, with $D = 0.2$:
 
-An earlier design folded types into blast as a $(1 + \rho)$ attenuator; that
-made type coverage almost inert (a fully-red codebase scored within a point or
-two of a fully-green one), which is unacceptable for a migration tool. The
-direct term fixes that: a fully-typed codebase scores near its structural
-ceiling, and the score falls monotonically as red code accumulates.
+- **Own flaws** (comprehension, mass) scale by $t(m) = 1$ if $m$ is red
+  (carries ≥ 1 own type error), else $D$ — understanding a branchy, coupled
+  file without type cover costs full price; with cover, a fifth.
+- **Blast** scales by $D + (1{-}D)\,u_{\text{dep}}(m)$, where
+  $u_{\text{dep}}$ is the **red-LoC share of $m$'s transitive structural
+  dependents** (same condensation machinery as the blast radius, weighted by
+  red LoC): re-verifying typed downstream code is cheap regardless of the
+  changed file's own colour; untyped dependents must be re-reasoned by hand.
 
-Mid-migration this term can dominate and drown the structural signal. The
-plugin option **`scoreTypeRisk: false`** removes it entirely — the score
-becomes 100% structural (comprehension + blast), while the type-check pass
-keeps running and driving node coloring and the typed % readout.
-(`typeCheckCommand: false` skips the pass altogether, which also zeroes the
-term.)
+Consequences worth naming: a red file with no flaws costs **nothing** (types
+discount flaws — they are not a penalty of their own); a fully-typed repo
+prices every flaw at $D$; red → green on a god file is worth exactly $1/D$ =
+5× off its flaw cost.
 
-### Complexity — the flaw weight $`W(m)`$
-
-$`\mathrm{cc}(m)`$ is the **cyclomatic complexity** of the file's script: the
-count of decision points (`if`, `?:`, every loop, `catch`, each non-default
-`case`, and each `&&`/`||`/`??`), read from the oxc AST. LoC weighs every line
-the same; a 40-branch function and a flat list of 40 assignments are equal by
-LoC but not by the effort to change them safely. So complexity does not add its
-own term — it **weights** the structural and type flaws above: a coupling edge
-or a type error inside dense, branch-heavy logic costs more than the same flaw
-in simple code. The weight saturates in density ($W \in [1, 1+\lambda)$), so it
-stays bounded and size-invariant like $I$ and $r$. Only the `<script>` is
-parsed, so template branching (`v-if`/`v-for`) is not counted.
+The plugin option **`scoreTypeRisk: false`** treats every file as typed
+($t = D$, $u_{\text{dep}} = 0$) — "score the structure as if the migration
+were finished", the post-migration structural ceiling, on the same scale as
+typed repos. The type-check pass keeps running and driving node coloring and
+the typed % readout. With a bounded discount there is no longer a reason for
+mid-migration projects to turn type risk off — the option exists to see the
+ceiling. (`typeCheckCommand: false` skips the pass altogether; every file
+then reads as typed.)
 
 ## Why the score is size-invariant
 
-Both `floor` and `cost` scale linearly with total LoC, and every surcharge
-factor is bounded and size-independent: $C_e$ is local, $I$ and $r$ live in
-$[0, 1]$, and the type term is per-file. A clean, typed, modular app scores in
-the low-to-mid 90s whether it has 20 files or 900. (Blast radius does drift slightly
-with size as shared foundations approach universal reachability, so the score
-converges toward a ceiling rather than being exactly flat — an asymptote, not
-the runaway of the naive model.)
+Ω is intensive: cost and floor both scale linearly with total LoC, every
+surcharge factor is bounded and size-independent ($C_e^w$ is local; vol, $r$
+∈ [0, 1]), and mass per LoC is $\kappa\,\mathrm{cc}/L_0 \cdot
+(\mathrm{loc}/L_0)^{p-1}$ — per-file shape, not repo size. A clean, modular
+app maps to the same score whether it has 20 files or 900. (Blast radius does
+drift slightly with size as shared foundations approach universal
+reachability — an asymptote, not a runaway.)
 
 ## What the panel shows
 
-- **score** — the headline `100·floor/cost`, graded green (≥ 80) / amber
-  (≥ 50) / red.
-- **drivers** — how the overhead above the floor splits into `comprehension`
-  (excess fan-out), `blast` (structural ripple), and `types` (the direct cost
-  of red files); the three add to 1. This says _why_ the score is what it is.
-  Clicking a driver row highlights each node in the graph with a ring in that
-  driver's colour, its opacity set by the file's contribution to that driver
-  (`contributions` on the wire, normalised to `[0,1]` by the top contributor).
-- **in cycles** — the fraction of LoC trapped in **structural** import cycles,
-  with the largest cycles listed (`cycles` on the wire): each row names the
-  members and the cheapest edge to sever — the cycle edge crossing the fewest
-  symbols; clicking a row isolates the members in the graph.
-- **typed** — LoC-weighted typed fraction (omitted when the type pass is off).
-- **complexity load** — how much of the overhead exists _because_ flaws sit in
-  complex, branch-dense files (the $W>1$ amplification). 0 when the code is
-  flaw-free or uniformly simple.
-- **hotspots** — the files dragging the score down most (highest overhead above their own floor), each with its fan-out,
-  fan-in, instability, and blast radius. This is where to look first: lower these and
-  the score rises. Clicking a hotspot isolates its dependents, switching to the
-  module view first when the file isn't a `.vue` node.
+- **score** — the headline, graded green (≥ 70) / amber (≥ 30 — the typical
+  app sits at the amber floor) / red (below typical, incl. negatives).
+- **drivers** — how the overhead splits into `comprehension` (excess volatile
+  fan-out), `blast` (volatility × radius), and `mass` (branches × size); the
+  three add to 1, typed discounts included. Clicking a driver row rings each
+  node in the graph by its contribution (`contributions` on the wire).
+- **in cycles / typed** — as before: LoC fraction in structural cycles (with
+  the cheapest cut per cycle), LoC-weighted typed fraction.
+- **churn measured** — the LoC fraction whose volatility rests on real git
+  history; the rest runs on the structural prior (shallow clones and fresh
+  repos read low here, and the score is honest about it).
+- **hotspots** — the files dragging the score down most (highest overhead
+  above their own floor), each with fan-out, fan-in, volatility, and blast
+  radius.
+- **scope** — "graph covers N of M source files · X% of source LoC", plus the
+  **unreached files** list (dead code, intentional archives, crawler blind
+  spots). Diagnostic only: unreached files enter neither floor nor cost. This
+  exists so a JS-graph score is never read as a repo-wide verdict — backend
+  code, Blade/ERB templates, and i18n JSONs are invisible to any Vite plugin.
 - **edge weight** — every drawn edge's opacity/width is the exact number the
-  score charges for it: the target's $I_0$ on the value projection. Stable
-  imports render nearly invisible; volatile hubs collect converging bold
-  lines. Type-only and lazy edges sit at the floor (their structural charge is 0) with distinct dashes.
+  score charges for it: the target's volatility. Stable imports render nearly
+  invisible; churning hubs collect converging bold lines. Type-only and lazy
+  edges sit at the floor with distinct dashes.
+- **calibration epoch** — shipped on the wire (`calibrationEpoch`) so old
+  screenshots stay interpretable across model versions.
 
 ## Parameters
 
-The model's constants are defined once in
+Term constants shape Ω and the hotspot list — tune them only on within-repo
+evidence (does the top-10 match the files you dread?). Mapping constants place
+repos on the scale — tune them only on cross-repo evidence. Never fix a score
+with a term knob or a hotspot list with a mapping knob.
+
+Defined once in
 [`src/analysis/maintainability.ts`](../src/analysis/maintainability.ts):
 
-| Symbol    | Meaning                                              | Default |
-| --------- | ---------------------------------------------------- | ------- |
-| $K$       | healthy fan-out budget (imports before cost)         | `8`     |
-| $\alpha$  | comprehension surcharge per import above $K$         | `0.05`  |
-| $\beta$   | structural blast weight                              | `3`     |
-| $\gamma$  | direct cost of a type error, as a multiple of LoC    | `1.2`   |
-| $\delta$  | blast-radius amplification of a red file's type cost | `4`     |
-| $\lambda$ | max complexity amplification of a file's flaw cost   | `2`     |
-| $D_0$     | decision density at half amplification (cc / LoC)    | `0.3`   |
+| Symbol         | Meaning                                                                             | Default |
+| -------------- | ----------------------------------------------------------------------------------- | ------- |
+| $K$            | healthy fan-out budget (weighted imports before cost)                               | `8`     |
+| $\alpha$       | comprehension surcharge per weighted import above $K$                               | `0.05`  |
+| $\beta$        | structural blast weight                                                             | `3`     |
+| $\kappa$       | mass: LoC-eq per decision point in a pivot-sized file                               | `1`     |
+| $L_0$          | mass pivot size (at $p=1$, only $\kappa/L_0$ matters — freeze $L_0$, tune $\kappa$) | `300`   |
+| $p$            | mass size exponent (raise to 1.25–1.5 if god files rank low)                        | `1`     |
+| $D$            | typed discount — the flaw-cost fraction typed code still pays                       | `0.2`   |
+| $x_{1/2}$      | churn half-saturation (share of the file's lines deleted/month, absolute)           | `0.01`  |
+| $f$            | structural floor — vol bottoms out at $f\cdot I_0$ without history                  | `0.15`  |
+| $\Omega_{typ}$ | overhead ratio of a typical production Vue app (→ score 30)                         | `0.10`  |
+| slope          | points per doubling of Ω                                                            | `25`    |
 
-## Recorded scores (symbol-resolution rollout)
+Churn-estimator constants, defined in
+[`src/analysis/churn.ts`](../src/analysis/churn.ts): fixed window `18`
+months (fetched as 540 days), bulk damping from `30` files, drop above `200`
+files. Recency decay and age-corrected rates are deliberately absent (§
+Volatility).
 
-Scores on the three playgrounds at each accuracy step
-(`node scripts/score.mjs`), documenting how much of the old numbers was
-barrel-edge distortion. The goal was accuracy, not a higher number — both
-directions appear across terms:
+**Ω_typ = 0.10 is provisional.** Re-measure a taste-rated production app with
+real history against the pinned estimator before moving the anchor, and bump
+`CALIBRATION_EPOCH` when it moves. The v2.1 regression fixtures below place a
+private taste-rated reference ("brain of materials", felt ≈ 30) at Ω 0.101 —
+one point of independent support for the anchor.
 
-| Playground           | raw file edges | symbol-resolved (steps 1–3) | + namespace narrowing & projections (5–6) |
-| -------------------- | -------------- | --------------------------- | ----------------------------------------- |
-| `playground` (vben)  | 86             | 92                          | 94                                        |
-| `playground-vuetify` | 94             | 94                          | 95                                        |
-| `playground-shadcn`  | 99             | 99                          | 99                                        |
+## Recorded scores — regression fixtures (calibration epoch `v2.1-2026-08`)
 
-Notable shifts: vben's `cycleLoc` fell 0.088 → 0.006 and vuetify's
-0.097 → 0.004 (cycles held together by `import type` back-edges are no
-hazard); vuetify's comprehension share rose (fan-out its `export *` chains
-used to hide surfaced at real consumers); definer blast collapsed through the
-`@vben/*` barrel layers.
+Playground scores under the v2.1 model (`node scripts/score.mjs --assert`).
+The submodules ship as shallow clones; the harness deepens each to cover the
+18-month churn window (`git fetch --shallow-since="20 months ago"`) before
+capturing, so these anchors exercise the **measured-churn** path (coverage
+0.84 / 0.94 / 0.40 by LoC).
 
-## Limits — what an import graph cannot see
+| Fixture                                | expected | measured | Ω      | drivers (comp / blast / mass) |
+| -------------------------------------- | -------- | -------- | ------ | ----------------------------- |
+| `playground-shadcn` (registry)         | 95       | 98       | 0.0153 | 0.00 / 0.10 / 0.90            |
+| `playground` (vben web-antd)           | 71       | 73       | 0.0305 | 0.00 / 0.52 / 0.48            |
+| `playground-vuetify` (library)         | 60       | 60       | 0.0439 | 0.00 / 0.40 / 0.60            |
+| brain of materials (private reference) | 30       | —        | 0.101  | felt ≈ 30 — anchors Ω_typ     |
 
-The score is honest about its blind spots; read it as a _relative_ signal, not
-an absolute verdict:
+Tolerance ±5 points per fixture (estimator detail drift); **ordering is a
+hard assertion**, as are two artifact guards: vben's icon barrel `lucide.ts`
+(append-only +60/−2 history) must read vol < 0.1 — it measures 0 — and
+vben's top hotspot must be `resize.vue` (1209 LoC / cc 141, vol 0.33).
+`--assert` exits nonzero on any drift. The typed fixtures above must never
+score below the untyped reference under any constant tweak.
 
-- **Deep intra-file complexity** — cyclomatic complexity is now measured
-  (decision points in the script) and _amplifies_ a file's flaw cost, but only
-  script logic is seen: template branching (`v-if`/`v-for`) and the shape of a
-  2000-line `switch` beyond its branch count remain invisible.
-- **Real churn** — volatility is proxied by instability ($I$). A frequently
-  edited but dependency-free leaf looks stable to the model. True churn needs
-  per-file commit history the crawl does not yet collect.
-- **Semantic coupling** — event buses, dependency injection, and string-keyed
-  registries the static import scanner misses. **Auto-imports** (Nuxt /
-  `unplugin-*`) are the named worst case: bindings with no import statement
-  at all, so blast radius reads falsely LOW. The crawl detects the generated
-  manifests and the tool shows a warning banner
-  ([symbol-resolution.md §12](./symbol-resolution.md)).
+History of the anchors: v1 (amplifier complexity, $I\cdot r$ blast,
+`100·floor/cost` mapping) scored these 94 / 95 / 99 — uselessly compressed at
+the top. v2 (shallow clones, rate÷age estimator, unshrunk structural prior)
+scored 22 / 12 / 37 — the age denominator saturated volatility on 1-commit
+submodules and the raw-I₀ prior priced structure as if it churned; both are
+pinned out of the estimator now. The hotspot lists match the files one would
+dread in each repo (vben's `resize.vue`, vuetify's `VCombobox.tsx` 857 /
+cc 184, shadcn's `useMessageScroller.ts` 1038 / cc 178) — the within-repo
+evidence the tuning protocol wants.
+
+## Limits — what this model cannot see
+
+- **Churn needs history** — a shallow clone or fresh repo degrades volatility
+  to the structural floor (the `churn measured` readout says so); submodule
+  HEAD moves are not watched, only the root repo's.
+- **Semantic coupling** — event buses, dependency injection, string-keyed
+  registries. **Auto-imports** are the named worst case: manifest targets are
+  crawled as nodes (so they don't read as dead code), but the _binding sites_
+  have no import statements, so fan-in and blast radius still read low — the
+  tool shows a warning banner.
+- **Deep intra-file structure** — cc counts branch points (script + template),
+  not the shape of a 2,000-line `switch` beyond its count.
+- **Non-JS surfaces** — backend code, server templates, i18n files. The scope
+  readout exists precisely so the score is read as a JS-graph signal, not a
+  codebase verdict.
 - **Test coverage** — arguably the strongest maintainability signal, and
   entirely invisible to a dependency graph.

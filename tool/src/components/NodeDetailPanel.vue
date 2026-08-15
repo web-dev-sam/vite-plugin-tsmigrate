@@ -23,16 +23,16 @@ const statusLabel: Record<NodeDetail["status"], string> = {
   analyzing: "analyzing",
 };
 
-// Instability ∈ [0,1]: low = stable (green), high = change-prone (red).
-function instabilityTone(v: number): string {
+// Volatility ∈ [0,1]: low = stable (green), high = change-prone (red).
+function volatilityTone(v: number): string {
   if (v < 0.34) {
     return "text-green";
   }
   return v < 0.67 ? "text-warn" : "text-red";
 }
-const INSTABILITY_HELP =
-  "How change-prone this file is: it leans on more files than lean on it. " +
-  "Green = stable; red = changes often, so edits here ripple further.";
+const VOLATILITY_HELP =
+  "How change-prone this file is: deleted lines per month from git history, " +
+  "floored by a structural estimate. Green = stable; red = changes often, so edits here ripple further.";
 </script>
 
 <template>
@@ -102,19 +102,16 @@ const INSTABILITY_HELP =
             </span>
             <span class="shrink-0 font-semibold tabular-nums">
               <template v-if="d.share !== null">{{ d.share }}%</template>
-              <template v-else-if="d.multiplier !== undefined"
-                >×{{ d.multiplier.toFixed(2) }}</template
-              >
             </span>
           </div>
           <p class="mt-0.5 text-xs text-muted">
             {{ d.meta
-            }}<template v-if="d.instability !== undefined">
+            }}<template v-if="d.volatility !== undefined">
               ·
-              <Tooltip as="span" :content="INSTABILITY_HELP">
-                <span class="underline decoration-dotted underline-offset-2">instability</span>
-                <span :class="instabilityTone(d.instability)"
-                  >&nbsp;{{ d.instability.toFixed(2) }}</span
+              <Tooltip as="span" :content="VOLATILITY_HELP">
+                <span class="underline decoration-dotted underline-offset-2">volatility</span>
+                <span :class="volatilityTone(d.volatility)"
+                  >&nbsp;{{ d.volatility.toFixed(2) }}</span
                 >
               </Tooltip>
             </template>

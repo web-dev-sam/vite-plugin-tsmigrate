@@ -1,5 +1,6 @@
 /**
- * Domain vocabulary for symbol-resolved dependency edges (docs/symbol-resolution.md §4).
+ * Domain vocabulary for symbol-resolved dependency edges (edge semantics:
+ * docs/maintainability-score.md "The graph").
  * Pure types + one helper, no IO. Internal to the analysis pipeline — the wire
  * (`shared/types.ts`) sees only the flattened `ComponentEdge` projection.
  */

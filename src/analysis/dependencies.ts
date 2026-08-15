@@ -12,10 +12,11 @@ import { assertNever } from "./symbols.ts";
 
 /**
  * Edge construction: classify every import/export/dynamic/glob form of a module
- * into provenance-rich `SymbolEdge`s (docs/symbol-resolution.md §2), and flatten
- * them to wire `ComponentEdge`s.
+ * into provenance-rich `SymbolEdge`s (edge semantics:
+ * docs/maintainability-score.md "The graph"), and flatten them to wire
+ * `ComponentEdge`s.
  *
- * Two views share the classifier but differ where §2 says they must:
+ * Two views share the classifier but differ where the semantics say they must:
  *
  * - `component` — today's `vue` graph, byte-for-byte: edges only between
  *   components, whole-module forms EXPAND via `ofModule` (a `.ts` file is not a
