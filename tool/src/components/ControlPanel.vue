@@ -1,6 +1,8 @@
 <script setup lang="ts">
+import { ref } from "vue";
 import type { Maintainability, MaintainabilityDriver } from "../../../src/shared/types.ts";
-import type { DepthRow, Mode, Readouts } from "../graph/render.ts";
+import type { DepthRow, Mode, NodeDetail, Readouts } from "../graph/render.ts";
+import NodeDetailPanel from "./NodeDetailPanel.vue";
 import Checkbox from "../ui/Checkbox.vue";
 import Collapsible from "../ui/Collapsible.vue";
 import Dot from "../ui/Dot.vue";
@@ -28,6 +30,8 @@ defineProps<{
   maintainability: Maintainability | null;
   /** The driver whose per-node contribution the graph is highlighting (null = none). */
   activeDriver: MaintainabilityDriver | null;
+  /** Detail of the hovered/selected graph node — populates the bottom section (null hides it). */
+  nodeDetail: NodeDetail | null;
 }>();
 const emit = defineEmits<{
   depthClick: [height: number];
@@ -71,14 +75,27 @@ const pct = (n: number) => (n * 100).toFixed(0);
 
 const dirOf = (f: string): string => f.slice(0, f.lastIndexOf("/") + 1);
 const baseOf = (f: string): string => f.slice(f.lastIndexOf("/") + 1);
-// Tooltip text after the (purple) filename — one string so the formatter can't
-// wedge stray whitespace between the segments.
-function hotspotMeta(h: Maintainability["hotspots"][number]): string {
+// Tooltip text around the (colour-coded) instability value: one string each
+// side so the formatter can't wedge stray whitespace between the segments.
+function hotspotMetaPre(h: Maintainability["hotspots"][number]): string {
   return (
     ` · ${h.loc} LoC · ${h.cc} branches · imports ${h.fanOut} · imported by ${h.fanIn}` +
-    ` · instability ${h.instability.toFixed(2)} · blast radius ${pct(h.blastRadius)}% of the codebase` +
+    ` · instability `
+  );
+}
+function hotspotMetaPost(h: Maintainability["hotspots"][number]): string {
+  return (
+    ` · blast radius ${pct(h.blastRadius)}% of the codebase` +
     `${h.inCycle ? " · in a cycle" : ""}. Click to isolate its dependents.`
   );
+}
+
+// Instability ∈ [0,1]: low = stable (green), high = change-prone (red).
+function instabilityTone(v: number): string {
+  if (v < 0.34) {
+    return "text-green";
+  }
+  return v < 0.67 ? "text-warn" : "text-red";
 }
 
 // Score grade: green from 80, amber from 50, else red — mirrors the node palette.
@@ -88,12 +105,40 @@ function scoreTone(score: number): string {
   }
   return score >= 50 ? "text-warn" : "text-red";
 }
+
+// The two stacked sections resize by dragging the divider. The bottom (detail)
+// section owns an explicit pixel height; the top settings section takes the
+// remaining flex space. Height is clamped to keep both sections usable.
+const asideEl = ref<HTMLElement | null>(null);
+const bottomHeight = ref(260);
+
+function startResize(e: PointerEvent) {
+  e.preventDefault();
+  const startY = e.clientY;
+  const startHeight = bottomHeight.value;
+  const total = asideEl.value?.clientHeight ?? window.innerHeight;
+  const max = Math.max(120, total - 160);
+  const onMove = (ev: PointerEvent) => {
+    // Dragging the divider up grows the bottom section; down shrinks it.
+    const next = startHeight - (ev.clientY - startY);
+    bottomHeight.value = Math.min(max, Math.max(120, next));
+  };
+  const onUp = () => {
+    window.removeEventListener("pointermove", onMove);
+    window.removeEventListener("pointerup", onUp);
+  };
+  window.addEventListener("pointermove", onMove);
+  window.addEventListener("pointerup", onUp);
+}
 </script>
 
 <template>
   <aside
-    class="fixed inset-y-4 left-4 w-[380px] overflow-y-auto rounded-xl border border-border/70 bg-panel/85 p-5 text-sm text-fg shadow-2xl shadow-black/40 backdrop-blur-md"
+    ref="asideEl"
+    class="fixed inset-y-4 left-4 flex w-95 flex-col overflow-hidden rounded-xl border border-border/70 bg-panel/85 text-sm text-fg shadow-2xl shadow-black/40 backdrop-blur-md"
   >
+    <!-- Top section: settings, scrollable. Flexes to fill the space the detail panel leaves. -->
+    <div class="min-h-0 flex-1 overflow-y-auto p-5">
     <header class="mb-4">
       <h1 class="text-base font-semibold tracking-tight">Vue typing progress</h1>
 
@@ -242,7 +287,11 @@ function scoreTone(score: number): string {
               <template #content
                 ><span class="text-muted">{{ dirOf(h.file) }}</span
                 ><span class="text-purple">{{ baseOf(h.file) }}</span
-                >{{ hotspotMeta(h) }}</template
+                >{{ hotspotMetaPre(h)
+                }}<span :class="instabilityTone(h.instability)">{{
+                  h.instability.toFixed(2)
+                }}</span
+                >{{ hotspotMetaPost(h) }}</template
               >
               <td class="max-w-[240px] truncate py-0.5 pl-2 first:rounded-l">
                 <span v-if="h.inCycle" class="text-red">↻ </span>{{ baseOf(h.file) }}
@@ -392,5 +441,22 @@ function scoreTone(score: number): string {
       drag to pan · scroll to zoom · click a node for its subtree · shift-click for its dependents ·
       ctrl-click for source
     </footer>
+    </div>
+
+    <!-- Bottom section: hovered/selected node detail. Only present when needed;
+         drag the divider to resize the two sections. -->
+    <template v-if="nodeDetail">
+      <div
+        class="group h-2 shrink-0 cursor-row-resize border-y border-border/70 bg-border/30 transition-colors hover:bg-accent/30"
+        @pointerdown="startResize"
+      >
+        <div
+          class="mx-auto mt-[3px] h-0.5 w-8 rounded-full bg-muted/50 transition-colors group-hover:bg-accent"
+        />
+      </div>
+      <div class="min-h-0 shrink-0 overflow-y-auto p-5" :style="{ height: bottomHeight + 'px' }">
+        <NodeDetailPanel :detail="nodeDetail" />
+      </div>
+    </template>
   </aside>
 </template>

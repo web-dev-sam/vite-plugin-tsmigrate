@@ -41,20 +41,6 @@
       "presentation": { "panel": "dedicated", "reveal": "always" }
     },
     {
-      "label": "Dev (microcomponents)",
-      "detail": "Coordinated dev loop against the microcomponents Micro Shop playground (tool-UI HMR + playground). Open the tool URL it prints.",
-      "type": "shell",
-      "command": "node scripts/dev.mjs",
-      "options": {
-        "cwd": "${workspaceFolder}",
-        "env": { "TSMIGRATE_PLAYGROUND": "playground-microshop" }
-      },
-      "isBackground": true,
-      "problemMatcher": [],
-      "icon": { "id": "rocket", "color": "terminal.ansiMagenta" },
-      "presentation": { "panel": "dedicated", "reveal": "always" }
-    },
-    {
       "label": "Playground only (no HMR)",
       "detail": "Run just the vben playground (no tool-UI HMR): the plugin serves the prebuilt dist/client tool on :7357. Pair with 'Build Tool UI' to verify the shipped bundle.",
       "type": "shell",

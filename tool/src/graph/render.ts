@@ -156,6 +156,68 @@ export interface Readouts {
   };
 }
 
+/** One contributor row inside a change-cost driver (an import or a dependent). */
+export interface DetailContributor {
+  name: string;
+  /** Trailing muted annotation, e.g. `×0.42` or `128 LOC`. */
+  tail: string;
+}
+
+/** One change-cost driver in the detail panel's breakdown. */
+export interface DetailDriver {
+  key: "comprehension" | "blast" | "types" | "complexity";
+  label: string;
+  /** Swatch colour (mirrors the panel's coloured dots). */
+  color: string;
+  /** Share of this file's overhead, in percent (null for the complexity multiplier). */
+  share: number | null;
+  /** Complexity flaw-cost multiplier (only set for the `complexity` driver). */
+  multiplier?: number;
+  /** Muted descriptive tail. */
+  meta: string;
+  /** Instability ∈ [0,1] for the `blast` driver — surfaced separately so the panel can colour-code it. */
+  instability?: number;
+  /** Weighted contributor rows (imports for coupling, dependents for blast). */
+  items: DetailContributor[];
+}
+
+/**
+ * Structured detail of the hovered or selected node, rendered by the sidebar's
+ * bottom panel. Replaces the old alt-hover tooltip: the tooltip now carries only
+ * the filename/LOC/links summary, everything else lives here.
+ */
+export interface NodeDetail {
+  id: string;
+  name: string;
+  /** Path relative to the project root. */
+  file: string;
+  /** Directory portion of `file` (trailing slash), `""` at the root. */
+  fileDir: string;
+  /** Basename of `file`. */
+  fileBase: string;
+  /** Actual file ending (e.g. `tsx`), falling back to the coarse kind. */
+  ext: string;
+  status: "typed" | "red" | "analyzing";
+  /** Extra own-status line (pending / N errors / self typed · subtree red), or null. */
+  ownStatus: string | null;
+  height: number;
+  loc: number;
+  cc: number;
+  errors: number;
+  /** Files that import this one ("X consume it"). */
+  fanIn: number;
+  /** Files this one imports ("consumes Y deps"). */
+  fanOut: number;
+  blame: { author: string; loc: number }[];
+  /**
+   * Change-cost breakdown: `null` until the score arrives; `atFloor` when the
+   * file adds no overhead; otherwise the per-driver rows.
+   */
+  breakdown: { atFloor: boolean; drivers: DetailDriver[] } | null;
+  /** Whether this reflects a live hover or the current selection. */
+  source: "hover" | "select";
+}
+
 export interface InitOptions {
   svg: SVGSVGElement;
   /** Fixed tooltip element the renderer fills and positions on hover. */
@@ -164,6 +226,8 @@ export interface InitOptions {
   onReadouts: (readouts: Readouts) => void;
   /** Fires on a node double-click — opens the source-view modal. */
   onOpenSource: (node: { id: string; file: string }) => void;
+  /** Fires with the hovered/selected node's structured detail (null clears the panel). */
+  onNodeDetail: (detail: NodeDetail | null) => void;
 }
 
 export interface GraphController {
@@ -180,7 +244,7 @@ export interface GraphController {
     driver: MaintainabilityDriver | null,
     contributions: MaintainabilityContributions | null,
   ): void;
-  /** Update the per-node change-cost breakdown for the alt-hover detail view. */
+  /** Update the per-node change-cost breakdown for the detail panel. */
   setBreakdown(breakdown: Record<string, MaintainabilityBreakdown> | null): void;
   /** Tear down the simulation, listeners and DOM. */
   destroy(): void;
@@ -241,7 +305,7 @@ function toRNode(n: ComponentNode): RNode {
 }
 
 export function initGraph(opts: InitOptions): GraphController {
-  const { tooltip, onReadouts, onOpenSource } = opts;
+  const { tooltip, onReadouts, onOpenSource, onNodeDetail } = opts;
   const svg = d3.select(opts.svg);
   const root = svg.append("g");
   const ringG = root.append("g");
@@ -288,13 +352,12 @@ export function initGraph(opts: InitOptions): GraphController {
   let haloSel: d3.Selection<SVGCircleElement, RNode, SVGGElement, unknown> | null = null;
   let driver: MaintainabilityDriver | null = null;
   let contrib: MaintainabilityContributions | null = null;
-  // Per-node change-cost breakdown for the alt-hover detail tooltip (null until
-  // the score arrives), an id→node map for contributor lookups, and the current
-  // hover target + whether its detail view is showing.
+  // Per-node change-cost breakdown for the detail panel (null until the score
+  // arrives), an id→node map for contributor lookups, and the current hover
+  // target that drives the tooltip + detail panel.
   let breakdown: Record<string, MaintainabilityBreakdown> | null = null;
   let byId = new Map<string, RNode>();
   let hovered: RNode | null = null;
-  let hoverDetail = false;
 
   // Click-to-isolate: ids reachable from the focused node. `dir` picks the walk
   // — "down" = its import subtree (what it uses), "up" = its supertree (what
@@ -366,86 +429,45 @@ export function initGraph(opts: InitOptions): GraphController {
     return ce + ca === 0 ? 0 : ce / (ce + ca);
   };
 
-  function tooltipHtml(d: RNode, detailed: boolean): string {
-    // Node colour already conveys green; only surface non-green status.
-    const status = d.analyzing
-      ? ' <span class="tip-mut">analyzing</span>'
-      : isGreen(d)
-        ? ""
-        : ' <span class="tip-e">red</span>';
-    // Omit the plain "typed" line (redundant with the green colour); keep
-    // pending / error / subtree-red detail.
-    const own = d.analyzing
-      ? "type-check pending"
-      : d.errors
-        ? `${d.errors} own errors`
-        : d.strictRed
-          ? "self typed · subtree red"
-          : null;
-    // Actual file ending (e.g. `tsx`) rather than the coarse `vue`/`ts` kind.
-    const ext = d.file.includes(".") ? d.file.split(".").pop()! : d.kind;
-    const links = ga.adj.get(d.id)?.size ?? 0;
+  // The tooltip is now a terse summary: filename, LOC, and the import links in
+  // the "X consume it · consumes Y deps" form. Everything else (status, path,
+  // depth, blame, change-cost breakdown) lives in the sidebar detail panel.
+  function tooltipHtml(d: RNode): string {
     const slash = d.file.lastIndexOf("/");
-    const fileDir = slash < 0 ? "" : d.file.slice(0, slash + 1);
     const fileBase = slash < 0 ? d.file : d.file.slice(slash + 1);
-    let html = `<b>${esc(d.name)}</b>${status} <span class="tip-p">${esc(ext)}</span>`;
-    if (own) html += `<br><span class="tip-p">${esc(own)}</span>`;
-    html +=
-      `<br><span class="tip-p">${esc(fileDir)}<span class="tip-name">${esc(fileBase)}</span></span>` +
-      `<br><span class="tip-p">depth ${d.height} · ${d.size} LOC · ${links} links</span>`;
-    if (controls.showBlame) {
-      const rows = Object.entries(d.blame).sort((a, b) => b[1] - a[1]);
-      if (rows.length) {
-        const top = rows
-          .slice(0, 8)
-          .map(([a, n]) => `${esc(a)}: ${n}`)
-          .join("<br>");
-        const more = rows.length > 8 ? `<br>+${rows.length - 8} more` : "";
-        html += `<br><span class="tip-blame">${top}${more}</span>`;
-      }
-    }
-    if (detailed) {
-      html += breakdownHtml(d);
-    } else if (breakdown?.[d.id]) {
-      html += `<br><span class="tip-mut">hold ⌥ alt for cost breakdown</span>`;
-    }
-    return html;
+    const fanIn = ga.inn.get(d.id)?.size ?? 0;
+    const fanOut = ga.out.get(d.id)?.size ?? 0;
+    return (
+      `<span class="tip-name">${esc(fileBase)}</span>` +
+      `<br><span class="tip-p">${d.size} LOC</span>` +
+      `<br><span class="tip-p">${fanIn} consume it · consumes ${fanOut} deps</span>`
+    );
   }
 
-  // The alt-hover detail: which files drive THIS file's change-cost, and by how
-  // much. Authoritative overhead per driver comes from the server breakdown;
-  // the contributor lists (imports weighted by volatility, transitive
-  // dependents by LoC) are derived from the graph structure the tool already holds.
-  function breakdownHtml(d: RNode): string {
-    let html = `<br><span class="tip-mut">— change-cost breakdown —</span>`;
-    const bd = breakdown?.[d.id];
-    if (!bd) {
-      return `${html}<br><span class="tip-mut">at its floor · nothing dragging the score here</span>`;
-    }
+  // Structured change-cost breakdown for the detail panel: which files drive
+  // THIS file's change-cost, and by how much. Authoritative overhead per driver
+  // comes from the server breakdown; the contributor lists (imports weighted by
+  // volatility, transitive dependents by LoC) are derived from the graph
+  // structure the tool already holds. Returns null until the score arrives.
+  function buildBreakdown(d: RNode): NodeDetail["breakdown"] {
+    if (!breakdown) return null;
+    const bd = breakdown[d.id];
+    if (!bd) return { atFloor: true, drivers: [] };
     const overhead = bd.comprehension + bd.blast + bd.types;
     const share = (x: number) => (overhead > 0 ? Math.round((x / overhead) * 100) : 0);
-    const dot = (c: string) =>
-      `<span style="display:inline-block;width:7px;height:7px;border-radius:50%;background:${c};margin-right:4px"></span>`;
-    const list = (rows: { n: string; tail: string }[]): string => {
-      const top = rows
-        .slice(0, 5)
-        .map((r) => `<br>&nbsp;&nbsp;· ${esc(r.n)} <span class="tip-mut">${r.tail}</span>`)
-        .join("");
-      const more =
-        rows.length > 5
-          ? `<br>&nbsp;&nbsp;<span class="tip-mut">+${rows.length - 5} more</span>`
-          : "";
-      return top + more;
-    };
-
+    const drivers: DetailDriver[] = [];
     if (bd.comprehension > 0) {
       const imports = [...(ga.out.get(d.id) ?? [])]
         .map((id) => ({ n: byId.get(id)?.name ?? id, w: i0Of(id) }))
         .sort((a, b) => b.w - a.w);
-      html +=
-        `<br>${dot(DRIVER_COLOR.comprehension)}excess coupling <b>${share(bd.comprehension)}%</b>` +
-        ` <span class="tip-mut">· ${imports.length} imports, weighted ${bd.weightedFanout}</span>` +
-        list(imports.map((r) => ({ n: r.n, tail: `×${r.w.toFixed(2)}` })));
+      drivers.push({
+        key: "comprehension",
+        label: "excess coupling",
+        color: DRIVER_COLOR.comprehension,
+        share: share(bd.comprehension),
+        meta: `${imports.length} imports, weighted ${bd.weightedFanout}`,
+        items: imports.map((r) => ({ name: r.n, tail: `×${r.w.toFixed(2)}` })),
+      });
     }
     if (bd.blast > 0) {
       const deps = new Set(isolateSet(d.id, "up", ga));
@@ -454,22 +476,85 @@ export function initGraph(opts: InitOptions): GraphController {
         .map((id) => ({ n: byId.get(id)?.name ?? id, loc: byId.get(id)?.size ?? 0 }))
         .sort((a, b) => b.loc - a.loc);
       const depLoc = rows.reduce((s, r) => s + r.loc, 0);
-      html +=
-        `<br>${dot(DRIVER_COLOR.blast)}change blast <b>${share(bd.blast)}%</b>` +
-        ` <span class="tip-mut">· ${deps.size} files (${depLoc} LOC, ${Math.round(bd.blastRadius * 100)}% of codebase) depend on this · instability ${bd.instability.toFixed(2)}</span>` +
-        list(rows.map((r) => ({ n: r.n, tail: `${r.loc} LOC` })));
+      drivers.push({
+        key: "blast",
+        label: "change blast",
+        color: DRIVER_COLOR.blast,
+        share: share(bd.blast),
+        meta:
+          `${deps.size} files (${depLoc} LOC, ${Math.round(bd.blastRadius * 100)}% of codebase) ` +
+          `depend on this`,
+        instability: bd.instability,
+        items: rows.map((r) => ({ name: r.n, tail: `${r.loc} LOC` })),
+      });
     }
     if (bd.types > 0) {
-      html +=
-        `<br>${dot(DRIVER_COLOR.types)}type errors <b>${share(bd.types)}%</b>` +
-        ` <span class="tip-mut">· ${d.errors} own ${d.errors === 1 ? "error" : "errors"}, costlier the wider it's depended on</span>`;
+      drivers.push({
+        key: "types",
+        label: "type errors",
+        color: DRIVER_COLOR.types,
+        share: share(bd.types),
+        meta: `${d.errors} own ${d.errors === 1 ? "error" : "errors"}, costlier the wider it's depended on`,
+        items: [],
+      });
     }
     if (bd.cxWeight > 1) {
-      html +=
-        `<br>${dot(COMPLEXITY_COLOR)}complexity load <b>×${bd.cxWeight.toFixed(2)}</b>` +
-        ` <span class="tip-mut">· ${d.cc} branches / ${d.size} lines multiply the flaws above</span>`;
+      drivers.push({
+        key: "complexity",
+        label: "complexity load",
+        color: COMPLEXITY_COLOR,
+        share: null,
+        multiplier: bd.cxWeight,
+        meta: `${d.cc} branches / ${d.size} lines multiply the flaws above`,
+        items: [],
+      });
     }
-    return html;
+    return { atFloor: false, drivers };
+  }
+
+  // Assemble the full structured detail for the hovered/selected node.
+  function buildDetail(d: RNode, source: "hover" | "select"): NodeDetail {
+    const status = d.analyzing ? "analyzing" : isGreen(d) ? "typed" : "red";
+    const ownStatus = d.analyzing
+      ? "type-check pending"
+      : d.errors
+        ? `${d.errors} own ${d.errors === 1 ? "error" : "errors"}`
+        : d.strictRed
+          ? "self typed · subtree red"
+          : null;
+    const ext = d.file.includes(".") ? d.file.split(".").pop()! : d.kind;
+    const slash = d.file.lastIndexOf("/");
+    const fileDir = slash < 0 ? "" : d.file.slice(0, slash + 1);
+    const fileBase = slash < 0 ? d.file : d.file.slice(slash + 1);
+    const blame = Object.entries(d.blame)
+      .sort((a, b) => b[1] - a[1])
+      .map(([author, loc]) => ({ author, loc }));
+    return {
+      id: d.id,
+      name: d.name,
+      file: d.file,
+      fileDir,
+      fileBase,
+      ext,
+      status,
+      ownStatus,
+      height: d.height,
+      loc: d.size,
+      cc: d.cc,
+      errors: d.errors,
+      fanIn: ga.inn.get(d.id)?.size ?? 0,
+      fanOut: ga.out.get(d.id)?.size ?? 0,
+      blame,
+      breakdown: buildBreakdown(d),
+      source,
+    };
+  }
+
+  // Push the current hover/selection detail to the panel. The live hover wins;
+  // otherwise the isolated (selected) node keeps the panel populated. Null hides it.
+  function emitDetail(): void {
+    const target = hovered ?? (focus ? (byId.get(focus.root) ?? null) : null);
+    onNodeDetail(target ? buildDetail(target, hovered ? "hover" : "select") : null);
   }
 
   // Recompute the blame rollup over the shown set (green-only by default; red folds errored in).
@@ -799,19 +884,13 @@ export function initGraph(opts: InitOptions): GraphController {
           .classed("hl", (l) => l.source === d || l.target === d)
           .classed("dim", (l) => l.source !== d && l.target !== d);
         hovered = d;
-        hoverDetail = e.altKey;
-        tooltip.innerHTML = tooltipHtml(d, hoverDetail);
+        tooltip.innerHTML = tooltipHtml(d);
         tooltip.style.opacity = "1";
+        emitDetail();
       })
       .on("mousemove", (e: MouseEvent) => {
         tooltip.style.left = `${e.clientX + 14}px`;
         tooltip.style.top = `${e.clientY + 14}px`;
-        // Alt can be pressed/released mid-hover without a new mouseover; swap
-        // the tooltip mode when the modifier state changes.
-        if (hovered && e.altKey !== hoverDetail) {
-          hoverDetail = e.altKey;
-          tooltip.innerHTML = tooltipHtml(hovered, hoverDetail);
-        }
       })
       .on("mouseout", () => {
         hovered = null;
@@ -821,9 +900,14 @@ export function initGraph(opts: InitOptions): GraphController {
         // Restore the search baseline (clears dimming when no search is active).
         applySearch();
         tooltip.style.opacity = "0";
+        // Fall back to the selected node's detail (or clear the panel).
+        emitDetail();
       });
 
     refresh();
+    // A rebuilt graph drops focus/hover; sync the panel to the empty state.
+    hovered = null;
+    emitDetail();
   }
 
   // Click empty space to clear node + depth focus.
@@ -833,11 +917,14 @@ export function initGraph(opts: InitOptions): GraphController {
       depthFocus = null;
       refresh();
     }
+    emitDetail();
   });
 
   function setControls(next: Controls): void {
     controls = next;
     refresh();
+    // Colour mode changes the shown node's status line.
+    emitDetail();
   }
 
   function toggleDepth(h: number): void {
@@ -856,6 +943,8 @@ export function initGraph(opts: InitOptions): GraphController {
 
   function setBreakdown(next: Record<string, MaintainabilityBreakdown> | null): void {
     breakdown = next;
+    // The breakdown collapsible fills in once the score arrives.
+    emitDetail();
   }
 
   // Toggle a node-focus isolate; `refresh()` reapplies visibility + link overlay.
@@ -863,6 +952,7 @@ export function initGraph(opts: InitOptions): GraphController {
     const already = focus !== null && focus.root === id && focus.dir === dir;
     focus = already ? null : { root: id, dir, set: isolateSet(id, dir, ga) };
     refresh();
+    emitDetail();
   }
 
   // Panel hotspot-row click: isolate a node's dependents (its supertree), just

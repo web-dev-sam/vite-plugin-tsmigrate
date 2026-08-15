@@ -6,7 +6,13 @@ import type {
   MaintainabilityContributions,
   MaintainabilityDriver,
 } from "../../../src/shared/types.ts";
-import { type Controls, type GraphController, type Readouts, initGraph } from "../graph/render.ts";
+import {
+  type Controls,
+  type GraphController,
+  type NodeDetail,
+  type Readouts,
+  initGraph,
+} from "../graph/render.ts";
 
 /**
  * Thin Vue wrapper around the framework-agnostic d3 renderer. Owns the
@@ -23,6 +29,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   readouts: [Readouts];
   openSource: [{ id: string; file: string }];
+  nodeDetail: [NodeDetail | null];
 }>();
 
 const svgRef = ref<SVGSVGElement | null>(null);
@@ -36,6 +43,7 @@ onMounted(() => {
     tooltip: tipRef.value,
     onReadouts: (r) => emit("readouts", r),
     onOpenSource: (n) => emit("openSource", n),
+    onNodeDetail: (d) => emit("nodeDetail", d),
   });
   // Controls first so the initial paint honours the live colour mode / filters.
   controller.setControls(props.controls);

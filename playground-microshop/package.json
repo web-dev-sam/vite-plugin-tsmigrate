@@ -1,9 +1,0 @@
-{
-  "name": "tsmigrate-playground-microshop",
-  "private": true,
-  "type": "module",
-  "devDependencies": {
-    "@types/node": "^26.1.1",
-    "vite": "^8.0.0"
-  }
-}

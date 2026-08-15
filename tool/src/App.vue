@@ -5,7 +5,7 @@ import { fetchDiagnostics, fetchGraph, fetchSearch } from "./api/client.ts";
 import ControlPanel from "./components/ControlPanel.vue";
 import GraphChart from "./components/GraphChart.vue";
 import SourceModal from "./components/SourceModal.vue";
-import type { Controls, Readouts } from "./graph/render.ts";
+import type { Controls, NodeDetail, Readouts } from "./graph/render.ts";
 
 /**
  * Root of the dev tool. Owns the live data lifecycle (progressive polling of
@@ -17,6 +17,9 @@ import type { Controls, Readouts } from "./graph/render.ts";
 const graph = ref<ComponentGraph | null>(null);
 const diag = ref<Diagnostics | null>(null);
 const readouts = ref<Readouts | null>(null);
+// Detail of the hovered/selected graph node — feeds the sidebar's bottom panel
+// (null hides it).
+const nodeDetail = ref<NodeDetail | null>(null);
 const error = ref<string | null>(null);
 
 // Persistent view controls (defaults mirror the prototype's initial panel).
@@ -168,6 +171,7 @@ onUnmounted(() => {
     :breakdown="graph?.maintainability.breakdown ?? null"
     @readouts="readouts = $event"
     @open-source="source = $event"
+    @node-detail="nodeDetail = $event"
   />
 
   <ControlPanel
@@ -187,6 +191,7 @@ onUnmounted(() => {
     :ripgrep="ripgrep"
     :maintainability="graph?.maintainability ?? null"
     :active-driver="activeDriver"
+    :node-detail="nodeDetail"
     @depth-click="chart?.toggleDepth($event)"
     @focus-node="chart?.focusDependents($event)"
     @driver-click="toggleDriver($event)"

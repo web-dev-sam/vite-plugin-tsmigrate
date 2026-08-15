@@ -15,8 +15,3 @@
 	url = https://github.com/unovue/shadcn-vue.git
 	branch = dev
 	shallow = true
-[submodule "playground-microshop/microcomponents"]
-	path = playground-microshop/microcomponents
-	url = https://gitlab.com/twoBirds/microcomponents.git
-	branch = main
-	shallow = true
