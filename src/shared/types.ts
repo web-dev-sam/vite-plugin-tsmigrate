@@ -200,7 +200,7 @@ export interface Maintainability {
    * target).
    */
   volatility: Record<string, number>;
-  /** Biggest score-draggers first (highest overhead above their own floor), capped — where to look to raise the score. */
+  /** Biggest score-draggers first (highest overhead above their own floor), capped — where to look to raise the score. Files at their floor (zero overhead) never appear. */
   hotspots: MaintainabilityHotspot[];
   /** Per-node normalised contribution to each driver, for the driver-highlight rings. */
   contributions: MaintainabilityContributions;

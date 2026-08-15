@@ -1089,24 +1089,25 @@ function graphOf(
 }
 
 test("hotspots surface the biggest score-draggers first, not the biggest files", () => {
-  // A branch-dense mid-size file (real mass overhead) vs a huge flat file
-  // sitting exactly at its own floor (huge cost, zero overhead).
+  // Two branch-dense files (real mass overhead) vs a huge flat file sitting
+  // exactly at its own floor (huge cost, zero overhead).
   const g = graphOf(
     [],
     facts({
       "/r/god.ts": { loc: 600, cc: 60 },
+      "/r/mid.ts": { loc: 300, cc: 10 },
       "/r/flat.ts": { loc: 2000, cc: 0 },
     }),
   );
   const h = scoreMaintainability(g).hotspots;
-  const god = h.find((x) => x.file === "god.ts")!;
-  const flat = h.find((x) => x.file === "flat.ts")!;
-  // Sorted by overhead (cost − loc): the branchy file tops the list; the huge
-  // flat file ranks below it despite dwarfing it in raw cost.
-  expect(h[0]!.file).toBe("god.ts");
-  expect(god.cost - god.loc).toBeGreaterThan(flat.cost - flat.loc);
-  expect(flat.cost).toBeGreaterThan(god.cost);
-  expect(h.indexOf(god)).toBeLessThan(h.indexOf(flat));
+  // Sorted by overhead (cost − loc): the branchiest file tops the list.
+  expect(h.map((x) => x.file)).toEqual(["god.ts", "mid.ts"]);
+  const god = h[0]!;
+  const mid = h[1]!;
+  expect(god.cost - god.loc).toBeGreaterThan(mid.cost - mid.loc);
+  // The flat file never appears: zero overhead means nothing to act on,
+  // however large its raw (read-only) cost is.
+  expect(h.some((x) => x.file === "flat.ts")).toBe(false);
 });
 
 test("per-node driver contributions are populated and normalised to the top contributor", () => {
@@ -1634,14 +1635,15 @@ test("type-only dependents free the target structurally — the compiler re-veri
   };
   const typed = build(true);
   const valued = build(false);
-  const hot = (m: Maintainability) => m.hotspots.find((h) => h.id === "/r/types.ts")!;
 
   // Structural terms: type-only importers leave Ca and the blast radius —
   // the module is FREER to change, the compiler re-verifies its dependents.
-  expect(hot(typed).fanIn).toBe(0);
-  expect(hot(typed).blastRadius).toBe(0);
-  expect(hot(valued).fanIn).toBe(3);
-  expect(hot(valued).blastRadius).toBeGreaterThan(0);
+  // With zero structural dependents (and no other flaws) types.ts sits at
+  // its own floor, so it drops out of the hotspot list entirely.
+  expect(typed.hotspots.some((h) => h.id === "/r/types.ts")).toBe(false);
+  const valuedHot = valued.hotspots.find((h) => h.id === "/r/types.ts")!;
+  expect(valuedHot.fanIn).toBe(3);
+  expect(valuedHot.blastRadius).toBeGreaterThan(0);
   expect(typed.costLoc).toBeLessThan(valued.costLoc);
 });
 

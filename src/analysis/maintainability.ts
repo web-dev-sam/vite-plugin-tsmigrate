@@ -338,9 +338,11 @@ export function scoreMaintainability(
       volatility[nodes[i]!.id] = Math.round(vol[i]! * 1000) / 1000;
     }
 
-    // Ship a per-file breakdown for the alt-hover detail view — but only for
-    // files that actually drag the score (carry overhead). Clean files at
-    // their floor are omitted to keep the payload small.
+    // Ship a per-file breakdown for the alt-hover detail view, and a hotspot
+    // row — both only for files that actually drag the score (carry
+    // overhead). Clean files at their floor are omitted: they can never be
+    // "where to look", however big they are, and shipping them makes the
+    // hotspot list read as arbitrary.
     if (contribC[i]! > 0 || contribB[i]! > 0 || contribM[i]! > 0) {
       breakdown[nodes[i]!.id] = {
         comprehension: Math.round(contribC[i]! * 10) / 10,
@@ -350,20 +352,19 @@ export function scoreMaintainability(
         volatility: Math.round(vol[i]! * 1000) / 1000,
         blastRadius: Math.round(blastRadius * 1000) / 1000,
       };
+      hotspots.push({
+        id: nodes[i]!.id,
+        file: nodes[i]!.file,
+        loc: li,
+        cc: cc(i),
+        fanOut: ce,
+        fanIn: ca,
+        volatility: vol[i]!,
+        blastRadius,
+        inCycle: inCycle(i),
+        cost,
+      });
     }
-
-    hotspots.push({
-      id: nodes[i]!.id,
-      file: nodes[i]!.file,
-      loc: li,
-      cc: cc(i),
-      fanOut: ce,
-      fanIn: ca,
-      volatility: vol[i]!,
-      blastRadius,
-      inCycle: inCycle(i),
-      cost,
-    });
   }
 
   const overhead = overheadComprehension + overheadBlast + overheadMass;

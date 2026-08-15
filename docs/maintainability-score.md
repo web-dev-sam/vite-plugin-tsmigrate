@@ -260,8 +260,10 @@ reachability — an asymptote, not a runaway.)
 - **churn measured** — the LoC fraction whose volatility rests on real git
   history; the rest runs on the structural prior (shallow clones and fresh
   repos read low here, and the score is honest about it).
-- **hotspots** — the files dragging the score down most (highest overhead
-  above their own floor), each with fan-out, fan-in, volatility, and blast
+- **hotspots** — the files dragging the score down most, sorted by overhead
+  above their own floor (`cost − loc`, descending); the shown **score drag**
+  % is each file's share of the codebase's total overhead. Files at their
+  floor never appear. Hover for fan-out, fan-in, volatility, and blast
   radius.
 - **scope** — "graph covers N of M source files · X% of source LoC", plus the
   **unreached files** list (dead code, intentional archives, crawler blind

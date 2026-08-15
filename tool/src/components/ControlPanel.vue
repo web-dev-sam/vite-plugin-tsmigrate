@@ -126,6 +126,17 @@ function hotspotMetaPost(h: Maintainability["hotspots"][number]): string {
   );
 }
 
+// Share of the codebase's total overhead this hotspot causes — the visible
+// sort key of the hotspot list (rows are sorted by cost − loc, descending).
+function dragShare(h: Maintainability["hotspots"][number], m: Maintainability): string {
+  const total = m.costLoc - m.floorLoc;
+  if (total <= 0) {
+    return "0%";
+  }
+  const p = Math.round(((h.cost - h.loc) / total) * 100);
+  return p < 1 ? "<1%" : `${p}%`;
+}
+
 // Volatility ∈ [0,1]: low = stable (green), high = change-prone (red).
 function volatilityTone(v: number): string {
   if (v < 0.34) {
@@ -308,9 +319,9 @@ function startResize(e: PointerEvent) {
           >
             <span>hotspots</span>
             <Tooltip
-              content="Blast radius: how much of the codebase depends on this file, directly or indirectly. 40% means a change here could ripple to about 40% of all the code."
+              content="Sorted by score drag — how much each file adds to the change cost beyond just reading it. The % is the file's share of the codebase's total overhead, so fixing the top row buys the most points. Hover a row for its stats (volatility, blast radius, branches)."
             >
-              <span>blast radius</span>
+              <span>score drag</span>
             </Tooltip>
           </div>
           <table class="w-full border-collapse text-xs">
@@ -333,7 +344,7 @@ function startResize(e: PointerEvent) {
                   <span v-if="h.inCycle" class="text-red">↻ </span>{{ baseOf(h.file) }}
                 </td>
                 <td class="py-0.5 pr-2 text-right tabular-nums text-muted last:rounded-r">
-                  {{ pct(h.blastRadius) }}%
+                  {{ dragShare(h, maintainability) }}
                 </td>
               </Tooltip>
             </tbody>
