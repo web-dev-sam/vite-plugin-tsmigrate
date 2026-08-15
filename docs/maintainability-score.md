@@ -7,16 +7,35 @@ top of the tool panel and served on `GET /api/graph` as
 measures, why each term is there, how the scale is anchored, and what it
 deliberately cannot see.
 
-## The idea: the cost of a _safe_ change
+## The idea: the cost of a safe change
 
 The only honest definition of maintainability is operational: **when I change
 a file, how much must I understand, how much can I break, and how much does
-the compiler help me?** A maintainable codebase keeps those small. So we model
-the expected cost of a change, compare it to the irreducible floor, and map
-the overhead ratio onto a criterion-referenced scale.
+the compiler help me?** A maintainable codebase keeps those small.
 
-We express each module's cost in **LoC-equivalent units** (a "unit" is the
-effort of reading one line once):
+Everything is priced in one currency: **the effort of reading one line of
+code once** (a "LoC-equivalent unit"). Changing a file `m` sends you four
+bills:
+
+1. **Read** — you have to read the file itself. `loc(m)` units, unavoidable.
+   Everything else in the model is overhead on top of this.
+2. **Comprehension** — you can't read a file in isolation; you also carry
+   what its imports do in your head. Importing a stable module is nearly
+   free (learn it once, it stays learned); importing a module that changes
+   every week means your mental model keeps going stale. A healthy number
+   of imports costs nothing at all.
+3. **Blast** — after your change, everything that imports the file — and
+   everything that imports *those* files, all the way up — must be
+   re-checked. The bill scales with how much of the codebase sits downstream
+   **and** how often this file actually changes.
+4. **Mass** — tangled logic in a big file. Every `if`, loop, and ternary
+   costs more the bigger the haystack it's buried in.
+
+Types don't get a bill of their own — they **discount** the other bills,
+because the compiler carries most of the re-checking wherever code is typed
+(see [Types](#types--a-discount-not-a-penalty)).
+
+Formally:
 
 ```math
 \mathrm{cost}(m) \;=\; \underbrace{\mathrm{loc}(m)}_{\text{read}} \;+\; t(m)\cdot\bigl(\underbrace{\mathrm{comp}(m)}_{\text{comprehension}} + \underbrace{\mathrm{mass}(m)}_{\text{mass}}\bigr) \;+\; \bigl(D + (1{-}D)\,u_{\text{dep}}(m)\bigr)\cdot\underbrace{\mathrm{blast}(m)}_{\text{blast}}
@@ -28,19 +47,54 @@ effort of reading one line once):
 \mathrm{mass}(m) = \kappa\,\mathrm{cc}(m)\bigl(\tfrac{\mathrm{loc}(m)}{L_0}\bigr)^{p}
 ```
 
-$t(m) = 1$ when $m$ carries its own type errors ("red"), else the **typed
-discount** $D$; $u_{\text{dep}}(m)$ is the red-LoC share of $m$'s transitive
-structural dependents (see [Types](#types--a-discount-not-a-penalty)).
+### Every symbol, in words
 
-The whole-codebase cost is the sum; the **floor** is the cost of reading every
-file once (`Σ loc`); and the **overhead ratio**
+Measured per file:
+
+| Symbol             | Plain meaning                                                                                                                                             |
+| ------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| $\mathrm{loc}(m)$  | The file's **maintainable lines**: the source with its `<style>` and `<svg>` blocks stripped.                                                             |
+| $\mathrm{vol}(m)$  | **Volatility**, 0–1: how likely the file is to change soon, measured from git history (see [Volatility](#volatility--the-shared-change-likelihood-term)). |
+| $r(m)$             | **Blast radius**, 0–1: the fraction of the codebase's lines sitting in files that import `m`, directly or through other files.                            |
+| $C_e^{w}(m)$       | **Weighted import count**: each import counted by its target's volatility — a stable constants file ≈ 0, a churning store ≈ 1.                            |
+| $\mathrm{cc}(m)$   | **Decision points**: `if`, loops, ternaries, `&&`/`\|\|`/`??`, `case`, `catch`, plus template `v-if`/`v-for`/`v-show`.                                     |
+| $t(m)$             | 1 if the file has its own type errors ("red"), else the typed discount $D$.                                                                               |
+| $u_{\text{dep}}(m)$ | Of all the lines downstream of `m` (the $r$ set), the fraction living in **red** files — "how much of what I can break is unprotected by types?"          |
+
+Tunable constants (defined once in
+[`src/analysis/maintainability.ts`](../src/analysis/maintainability.ts)):
+
+| Symbol   | Plain meaning                                                                                                                                    | Default |
+| -------- | ------------------------------------------------------------------------------------------------------------------------------------------------ | ------- |
+| $K$      | Free import budget: the first $K$ weighted import-points cost nothing — ordinary modularity is free.                                             | `8`     |
+| $\alpha$ | Price per import-point over budget: each one makes **every line of the file 5% harder to read** (the whole file is read amid those moving parts). | `0.05`  |
+| $\beta$  | Blast ceiling: the worst case — a file everyone imports that changes constantly — costs $\beta\times$ its own length extra per change.            | `3`     |
+| $\kappa$ | Price of one decision point in a pivot-sized file: 1 branch in a 300-line file = the effort of reading one line.                                  | `1`     |
+| $L_0$    | The "normal file" size mass prices against. At $p = 1$ only $\kappa/L_0$ matters — freeze $L_0$, tune $\kappa$.                                   | `300`   |
+| $p$      | How fast a branch's price grows with file size (1 = linear). Raise to 1.25–1.5 if god files rank too low in the hotspots.                          | `1`     |
+| $D$      | Typed discount: typed code pays this fraction of a flaw's cost — the compiler carries the rest.                                                    | `0.2`   |
+
+A worked example: a **red** 300-line file with 12 weighted imports, cc 30,
+vol 0.5, 10% of the codebase downstream of which half is red.
+
+- read = 300
+- comprehension = 300 · 0.05 · (12 − 8) = **60** (4 imports over budget →
+  every line 20% harder)
+- mass = 1 · 30 · (300/300)¹ = **30** (30 branches at full pivot price)
+- blast = 300 · 3 · 0.5 · 0.1 = 45, discounted by 0.2 + 0.8 · 0.5 = 0.6 →
+  **27**
+- cost = 300 + 1·(60 + 30) + 27 = **417** — a 39% surcharge on just reading
+  it.
+
+The whole-codebase cost is the sum over files; the **floor** is the cost of
+reading every file once (`Σ loc`); and the **overhead ratio**
 
 ```math
 \Omega = \frac{\mathrm{cost} - \mathrm{floor}}{\mathrm{floor}}
 ```
 
-is what the score maps. Throughout, $\mathrm{loc}(m)$ is **maintainable**
-source lines: the file with its `<style>` and `<svg>` blocks removed.
+is what the score maps: "how much does this codebase charge me *on top of*
+the reading that any codebase requires?"
 
 ## The scale: criterion-referenced, two legible constants
 
@@ -49,13 +103,13 @@ source lines: the file with its `<style>` and `<svg>` blocks removed.
 ```
 
 - **Ω_typ = 0.10** — the overhead ratio of a _typical production Vue app_,
-  pinned to score **30**. The scale is criterion-referenced: a quality
-  standard defines it, and the average project is allowed (expected) to fail.
-  A norm-referenced scale — median project = 50 — would hand half the world a
-  passing grade by construction, which is exactly the dishonest encouragement
-  this model avoids.
+  pinned to score **30**. The scale is graded against a fixed quality bar,
+  not on a curve: a standard defines it, and the average project is allowed
+  (expected) to fail. Grading on a curve — median project = 50 — would hand
+  half the world a passing grade by construction, which is exactly the
+  dishonest encouragement this model avoids.
 - **Slope: 25 points per doubling** of Ω — halve the overhead for +25, double
-  it for −25 (Weber–Fechner, but sayable out loud).
+  it for −25.
 - The **100 cap** is principled: Ω = 0 — changes cost only the reading — is a
   true floor. The **bottom is open**: negatives are reserved for genuine
   disasters.
@@ -77,15 +131,21 @@ Archetypes under this anchoring (from the calibration analysis):
 
 ## Volatility — the shared change-likelihood term
 
-Both remaining structural terms price change against **volatility**
-vol ∈ [0, 1]: how likely a module is to actually change. The pinned,
-production-validated form:
+Both comprehension and blast price change against **volatility**
+vol ∈ [0, 1]: how likely is this file to actually change soon? A dependency
+that never moves is cheap to depend on; a hub that never moves never sets its
+blast off. The pinned, production-validated form:
 
 ```math
 x(m) = \frac{\text{damped deleted lines/month}}{\mathrm{loc}(m)},
 \qquad
 \mathrm{vol}(m) = \max\Bigl(\frac{x(m)}{x(m) + x_{1/2}},\; f\cdot I_0(m)\Bigr)
 ```
+
+In words: count how many of the file's lines get **deleted** per month
+(from git), divide by its size, and squash the result into 0–1 so that
+deleting 1% of the file per month reads as "half volatile". Files with no
+usable history fall back to a small structure-based guess.
 
 - **Deleted lines only** (from `git log --numstat`), never added lines:
   appending to a registry/barrel/config is risk-free — modifying existing
@@ -94,20 +154,22 @@ x(m) = \frac{\text{damped deleted lines/month}}{\mathrm{loc}(m)},
   An added-lines signal marked the barrel fully volatile.
 - **Absolute saturation**: half-volatile at $x_{1/2}$ = 1% of the file's
   lines deleted per month — a **fixed** scale, deliberately not a per-repo
-  percentile, which would saturate every repo's hot quartile and destroy the
-  cross-repo criterion referencing the whole mapping is built on.
+  percentile. A percentile would make every repo's hottest quartile read as
+  maximally volatile, so a becalmed maintenance-mode codebase would score
+  like one whose core churns daily — and cross-repo comparability dies.
 - **Hygiene** (in `src/analysis/churn.ts`): one `git log --numstat -M` pass
   per repository over a fixed 18-month window; **rename chaining** (`-M`,
   walked newest → oldest so pre-rename churn lands on the present path);
   **bulk damping** — a commit touching $k$ files carries weight
   $\min(1, \sqrt{30/k})$, and commits above 200 files (formatting passes,
   codemods) are dropped entirely (their renames still chain).
-- **Structural floor**: with thin or no history the fallback is
+- **Structural fallback**: with thin or no history, vol bottoms out at
   $f \cdot I_0$, where $I_0 = C_e/(C_e+C_a)$ is raw **Martin instability**
-  and $f = 0.15$ shrinks it hard — presumed volatility is weak evidence, and
-  an unshrunk structural prior drowned the other terms on history-less repos.
-  History-less codebases still _order_ by structure; they just don't read as
-  if every mid-layer module churned daily.
+  (imports ÷ (imports + importers) — "how much does this file depend on
+  others vs. being depended on") and $f = 0.15$ shrinks it hard: presumed
+  volatility is weak evidence, and an unshrunk structural prior drowned the
+  other terms on history-less repos. History-less codebases still _order_ by
+  structure; they just don't read as if every mid-layer module churned daily.
 - Recency decay and age-corrected rates are deliberately **absent** — an age
   denominator saturated shallow-clone fixtures (the vben=22 incident) and
   neither was part of the validated runs. Re-validate against the regression
@@ -118,7 +180,7 @@ git work tree (`git -C <dir> rev-parse --show-toplevel`, walk-up cached) — a
 submodule is a single gitlink entry in its parent, so a log at the parent root
 would silently report nothing for files inside it. The panel's **churn
 measured** readout is the LoC fraction with usable history; the rest runs on
-the floor.
+the fallback.
 
 Volatility replaces the old model's Martin-instability terms outright. The old
 blast term $I\cdot r$ was structurally self-canceling: high fan-in drives
@@ -158,16 +220,18 @@ All terms are computed over these edges, through per-kind projections.
 
 ### Edge projections
 
-Edges feed the terms through **per-kind projections**:
+Not every import is a real "can break at runtime" dependency, so each term
+sees only the edges that matter to it:
 
 - **Type-only edges** (`import type`, `import { type X }`) leave every
-  structural term — $C_e^{w}$, $C_a$, and the blast radius $r$. A type-only
-  dependent is re-verified by the **compiler**, not by a human re-reasoning
-  about behaviour.
+  structural term — $C_e^{w}$, $C_a$, and the blast radius $r$. If only your
+  types are consumed, a change is re-verified by the **compiler**, not by a
+  human re-reasoning about behaviour.
 - **Lazy edges** (`import(...)`, `import.meta.glob`) leave only the
   **importer's** $C_e^{w}$: a route table globbing 200 pages is a declarative
-  registry, not comprehension load. The targets keep their fan-in,
-  reachability and blast radius — a broken page still breaks navigation.
+  registry, not 200 things its reader must understand. The targets keep
+  their fan-in, reachability and blast radius — a broken page still breaks
+  navigation.
 - Everything else — including synchronous side-effect imports — counts
   everywhere.
 - Cycle detection runs on the **structural** projection: a cycle held
@@ -175,53 +239,76 @@ Edges feed the terms through **per-kind projections**:
 
 ### Comprehension — $`\alpha\,\max(0,\,C_e^{w}(m)-K)`$
 
-$`C_e^{w}(m)=\sum_{d\,\in\,\text{imports}(m)} \mathrm{vol}(d)`$ is the
-**volatility-weighted fan-out**: each synchronous value import is priced by
-how volatile its target is. Depending on a **stable** module — an icon or
-constants barrel that never changes — is nearly free, while depending on a
-churning store costs close to a full edge. Only weighted fan-out **above a
-healthy budget** $K$ costs anything, so ordinary modularity is free.
+**"Do I have to keep too many moving parts in my head to read this file?"**
+
+Count the file's imports, but weight each one by how volatile its target is:
+$C_e^{w}(m)=\sum_{d\,\in\,\text{imports}(m)} \mathrm{vol}(d)$. Depending on a
+**stable** module — an icon or constants barrel that never changes — is
+nearly free, while depending on a churning store costs close to a full
+import-point. The first $K = 8$ points are **free**, so ordinary modularity
+costs nothing. Every point above the budget makes every line of the file
+$\alpha = 5\%$ harder to read — the whole file is read in the context of
+those moving parts, which is why the surcharge multiplies `loc`.
 
 ### Blast — $`\beta\,\mathrm{vol}(m)\,r(m)`$
 
-The cost of _behavioural_ ripple: change a widely-depended-upon module and you
-must re-reason about, re-review, and re-test everything downstream. It is the
-product of the module's **measured volatility** and its **blast radius**
-$r(m)$ — the fraction of the codebase's LoC that transitively imports $m$,
-computed on the structural projection over the graph's strongly-connected
-condensation. An import **cycle** folds its entire LoC into every member's
-blast radius (cycle members are mutual dependents), so a cycle is penalised
-_through_ blast rather than by an ad-hoc constant. A stable foundation is
-never punished for being popular; a hub that measurably churns with the
-codebase downstream finally costs what it feels like.
+**"How big is the explosion when I touch this, and how often does someone
+touch it?"**
+
+Change a widely-imported module and you must re-reason about, re-review, and
+re-test everything downstream. The bill is the product of:
+
+- $r(m)$ — the **blast radius**: what fraction of the codebase's lines sit in
+  files that transitively import `m` (computed over the graph's
+  strongly-connected condensation);
+- $\mathrm{vol}(m)$ — how often `m` **actually changes**, so the bill is paid
+  as often as the explosion actually goes off;
+- $\beta = 3$ — the ceiling: the worst case (everyone imports it, it changes
+  constantly) costs 3× the file's own length, every change.
+
+Multiplying radius by measured volatility is the key move: a rock-stable
+foundation imported by everyone costs **nothing** — popular but frozen means
+the blast never goes off. A hub that half the app imports *and* that gets
+rewritten weekly finally costs what it feels like. An import **cycle** folds
+its entire LoC into every member's blast radius (cycle members are mutual
+dependents), so cycles are penalised _through_ blast rather than by an ad-hoc
+constant.
 
 ### Mass — $`\kappa\,\mathrm{cc}(m)\,(\mathrm{loc}(m)/L_0)^p`$
 
-Complexity is a **first-class cost that escalates with file size**: each
-decision point costs more the bigger the file it is buried in. A branch in a
-150-line component is half price; a branch in a 1,400-line composable costs
-4.7×. **Splitting a god file genuinely lowers the score.**
+**"How tangled is the logic, and how big is the haystack it's buried in?"**
+
+Each decision point costs $\kappa = 1$ line-equivalent in a pivot-sized
+($L_0 = 300$ lines) file, scaled by file size: a branch in a 150-line
+component is half price; a branch in a 1,400-line composable costs 4.7×,
+because you navigate the whole haystack to reason about it. **Splitting a god
+file genuinely lowers the score.**
+
 $\mathrm{cc}(m)$ counts the script's decision points (`if`, `?:`, loops,
 `catch`, non-default `case`, `&&`/`||`/`??` — from the oxc AST) **plus the
 template's branch directives** (`v-if`/`v-else-if`/`v-for`/`v-show`) — a
-`v-if`-dense component with a flat script is real branching load. cc-gating
-the size escalator keeps prose and flat declaration files free (legal text,
-URL tables, icon data) however long they are.
+`v-if`-dense component with a flat script is real branching load. And because
+the size escalator only fires on branches, a 3,000-line file of flat data
+(legal text, URL tables, icon lists) with zero branches costs zero.
 
 ### Types — a discount, not a penalty
 
-Types are a cost **discount on every flaw**, not a term of their own: the
-compiler carries most of the re-verification wherever code is typed. Per
-file, with $D = 0.2$:
+A file is **red** when the type-checker reports at least one error *inside
+it* — an implicit `any`, a missing prop type — meaning the compiler can't
+vouch for it and a human must. Types are a cost **discount on every flaw**,
+not a term of their own: the compiler carries most of the re-verification
+wherever code is typed. Per file, with $D = 0.2$:
 
-- **Own flaws** (comprehension, mass) scale by $t(m) = 1$ if $m$ is red
-  (carries ≥ 1 own type error), else $D$ — understanding a branchy, coupled
-  file without type cover costs full price; with cover, a fifth.
+- **Own flaws** (comprehension, mass) scale by $t(m) = 1$ if $m$ is red,
+  else $D$ — understanding a branchy, coupled file without type cover costs
+  full price; with cover, a fifth.
 - **Blast** scales by $D + (1{-}D)\,u_{\text{dep}}(m)$, where
-  $u_{\text{dep}}$ is the **red-LoC share of $m$'s transitive structural
-  dependents** (same condensation machinery as the blast radius, weighted by
-  red LoC): re-verifying typed downstream code is cheap regardless of the
-  changed file's own colour; untyped dependents must be re-reasoned by hand.
+  $u_{\text{dep}}$ is the fraction of `m`'s downstream lines living in red
+  files (same reach set as the blast radius, weighted by red LoC). The
+  slider runs from $D$ (everything downstream typed — `tsc` re-checks it for
+  you) to 1 (everything red — humans re-reason it by hand), and it depends on
+  the *dependents'* colour, not `m`'s own: typed downstream code is cheap to
+  re-verify no matter what you changed.
 
 Consequences worth naming: a red file with no flaws costs **nothing** (types
 discount flaws — they are not a penalty of their own); a fully-typed repo
@@ -239,13 +326,13 @@ then reads as typed.)
 
 ## Why the score is size-invariant
 
-Ω is intensive: cost and floor both scale linearly with total LoC, every
-surcharge factor is bounded and size-independent ($C_e^w$ is local; vol, $r$
-∈ [0, 1]), and mass per LoC is $\kappa\,\mathrm{cc}/L_0 \cdot
-(\mathrm{loc}/L_0)^{p-1}$ — per-file shape, not repo size. A clean, modular
-app maps to the same score whether it has 20 files or 900. (Blast radius does
-drift slightly with size as shared foundations approach universal
-reachability — an asymptote, not a runaway.)
+A clean, modular app maps to the same score whether it has 20 files or 900:
+cost and floor both scale linearly with total LoC, every surcharge factor is
+bounded and size-independent ($C_e^w$ is local; vol, $r$ ∈ [0, 1]), and mass
+per LoC is $\kappa\,\mathrm{cc}/L_0 \cdot (\mathrm{loc}/L_0)^{p-1}$ —
+per-file shape, not repo size. (Blast radius does drift slightly with size as
+shared foundations approach universal reachability — an asymptote, not a
+runaway.)
 
 ## What the panel shows
 
@@ -258,7 +345,7 @@ reachability — an asymptote, not a runaway.)
 - **in cycles / typed** — as before: LoC fraction in structural cycles (with
   the cheapest cut per cycle), LoC-weighted typed fraction.
 - **churn measured** — the LoC fraction whose volatility rests on real git
-  history; the rest runs on the structural prior (shallow clones and fresh
+  history; the rest runs on the structural fallback (shallow clones and fresh
   repos read low here, and the score is honest about it).
 - **hotspots** — the files dragging the score down most, sorted by overhead
   above their own floor (`cost − loc`, descending); the shown **score drag**
@@ -279,27 +366,19 @@ reachability — an asymptote, not a runaway.)
 
 ## Parameters
 
-Term constants shape Ω and the hotspot list — tune them only on within-repo
-evidence (does the top-10 match the files you dread?). Mapping constants place
-repos on the scale — tune them only on cross-repo evidence. Never fix a score
-with a term knob or a hotspot list with a mapping knob.
+All defaults live in one place,
+[`src/analysis/maintainability.ts`](../src/analysis/maintainability.ts); the
+term constants are explained in the
+[symbol table](#every-symbol-in-words) above. Two more place repos on the
+scale: $\Omega_{typ} = 0.10$ (the typical-app anchor → score 30) and the
+slope of `25` points per doubling of Ω.
 
-Defined once in
-[`src/analysis/maintainability.ts`](../src/analysis/maintainability.ts):
-
-| Symbol         | Meaning                                                                             | Default |
-| -------------- | ----------------------------------------------------------------------------------- | ------- |
-| $K$            | healthy fan-out budget (weighted imports before cost)                               | `8`     |
-| $\alpha$       | comprehension surcharge per weighted import above $K$                               | `0.05`  |
-| $\beta$        | structural blast weight                                                             | `3`     |
-| $\kappa$       | mass: LoC-eq per decision point in a pivot-sized file                               | `1`     |
-| $L_0$          | mass pivot size (at $p=1$, only $\kappa/L_0$ matters — freeze $L_0$, tune $\kappa$) | `300`   |
-| $p$            | mass size exponent (raise to 1.25–1.5 if god files rank low)                        | `1`     |
-| $D$            | typed discount — the flaw-cost fraction typed code still pays                       | `0.2`   |
-| $x_{1/2}$      | churn half-saturation (share of the file's lines deleted/month, absolute)           | `0.01`  |
-| $f$            | structural floor — vol bottoms out at $f\cdot I_0$ without history                  | `0.15`  |
-| $\Omega_{typ}$ | overhead ratio of a typical production Vue app (→ score 30)                         | `0.10`  |
-| slope          | points per doubling of Ω                                                            | `25`    |
+The tuning protocol: **term** constants ($K$, $\alpha$, $\beta$, $\kappa$,
+$L_0$, $p$, $D$, $x_{1/2}$, $f$) shape Ω and the hotspot list — tune them
+only on within-repo evidence (does the top-10 match the files you dread?).
+**Mapping** constants ($\Omega_{typ}$, slope) place repos on the scale — tune
+them only on cross-repo evidence. Never fix a score with a term knob or a
+hotspot list with a mapping knob.
 
 Churn-estimator constants, defined in
 [`src/analysis/churn.ts`](../src/analysis/churn.ts): fixed window `18`
@@ -348,8 +427,8 @@ evidence the tuning protocol wants.
 ## Limits — what this model cannot see
 
 - **Churn needs history** — a shallow clone or fresh repo degrades volatility
-  to the structural floor (the `churn measured` readout says so); submodule
-  HEAD moves are not watched, only the root repo's.
+  to the structural fallback (the `churn measured` readout says so);
+  submodule HEAD moves are not watched, only the root repo's.
 - **Semantic coupling** — event buses, dependency injection, string-keyed
   registries. **Auto-imports** are the named worst case: manifest targets are
   crawled as nodes (so they don't read as dead code), but the _binding sites_
