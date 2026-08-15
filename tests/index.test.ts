@@ -95,6 +95,8 @@ test("analyses the playground app and serves the component graph", async () => {
   // Vue version is resolved from the app when present; the hermetic fixture
   // has no local vue install, so it may be null — accept either.
   expect(diag.vueVersion === null || typeof diag.vueVersion === "string").toBe(true);
+  // Project name: no package.json in the fixture, so it falls back to the root dir basename.
+  expect(diag.projectName).toBe("app");
 
   // Component graph: poll until queued analyzers (blame) finish.
   const graphUrl = new URL("/api/graph", toolUrl);

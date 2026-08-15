@@ -87,6 +87,8 @@ export type Mode = "strict" | "naive";
 export interface Controls {
   mode: Mode;
   onlyRed: boolean;
+  /** Show only typed (green) components — the inverse of `onlyRed`. */
+  onlyGreen: boolean;
   showRings: boolean;
   showBlame: boolean;
   search: string;
@@ -110,6 +112,12 @@ export interface Controls {
    * but paints the edges with the emphasis colour instead of the muted grey.
    */
   highlightLinks: boolean;
+  /**
+   * Draw each shown node's filename as a text label above the node. Off by
+   * default: with thousands of nodes the labels overlap into noise, so this is
+   * an opt-in overlay (independent of the depth-number labels).
+   */
+  showLabels: boolean;
 }
 
 /** One row of the per-depth progress table (highest depth first). */
@@ -161,24 +169,45 @@ export interface DetailContributor {
   name: string;
   /** Trailing muted annotation, e.g. `×0.42` or `128 LOC`. */
   tail: string;
+  /**
+   * Provenance line (native tooltip): the dependent's shortest import path to
+   * this file plus the symbols crossing the final hop, or an import edge's
+   * crossing symbols — the greppable "why" behind the row.
+   */
+  why?: string;
 }
 
 /** One change-cost driver in the detail panel's breakdown. */
 export interface DetailDriver {
-  key: "comprehension" | "blast" | "types" | "complexity";
+  key: "comprehension" | "blast" | "types" | "cycle" | "complexity";
   label: string;
   /** Swatch colour (mirrors the panel's coloured dots). */
   color: string;
-  /** Share of this file's overhead, in percent (null for the complexity multiplier). */
+  /** Share of this file's overhead, in percent (null for the complexity multiplier and the cycle row). */
   share: number | null;
   /** Complexity flaw-cost multiplier (only set for the `complexity` driver). */
   multiplier?: number;
   /** Muted descriptive tail. */
   meta: string;
+  /** Mechanical next step ("imports 12 volatile modules — invert or split"). */
+  action?: string;
   /** Instability ∈ [0,1] for the `blast` driver — surfaced separately so the panel can colour-code it. */
   instability?: number;
   /** Weighted contributor rows (imports for coupling, dependents for blast). */
   items: DetailContributor[];
+}
+
+/**
+ * One shipped import cycle, preprocessed by the app shell for display and
+ * isolation: members, a basename chain label, and the cut hint — the cycle
+ * edge crossing the fewest symbols is the cheapest to sever.
+ */
+export interface CycleInfo {
+  members: string[];
+  /** Display chain, e.g. `store.ts ↔ actions.ts`. */
+  label: string;
+  /** Cheapest edge to sever, or null when no symbol data narrows the choice. */
+  cut: { from: string; to: string; label: string } | null;
 }
 
 /**
@@ -233,12 +262,21 @@ export interface InitOptions {
 export interface GraphController {
   /** Rebuild the whole scene for a graph (vue ↔ full swap or fresh data). */
   setGraph(graph: Graph): void;
+  /**
+   * Provide the FULL module graph + shipped cycles regardless of the shown
+   * view: the score runs on it, so breakdown contributor lists, ×I₀ tails and
+   * dependent paths must come from it too (in the `vue` view the current
+   * view's adjacency cannot add up to the server's numbers).
+   */
+  setFullGraph(full: Graph | null, cycles: CycleInfo[] | null): void;
   /** Reapply the persistent view controls without a relayout. */
   setControls(controls: Controls): void;
   /** Toggle a depth-row isolate (clears it when already active). */
   toggleDepth(height: number): void;
   /** Isolate a node's supertree (its dependents) — the panel's hotspot-row click. */
   focusDependents(id: string): void;
+  /** Isolate an explicit id set (the panel's cycle-row click). */
+  focusSet(ids: string[]): void;
   /** Highlight a driver's per-node contribution as coloured rings (null clears). */
   setDriverHighlight(
     driver: MaintainabilityDriver | null,
@@ -277,12 +315,16 @@ interface RNode extends d3.SimulationNodeDatum {
 interface RLink extends d3.SimulationLinkDatum<RNode> {
   source: string | RNode;
   target: string | RNode;
-  /** Type-only import edge — rendered dashed. */
+  /** Type-only import edge — rendered dashed, zero structural weight. */
   type: boolean;
+  /** Lazy-only edge (dynamic import / glob) — distinct dash, zero comprehension weight. */
+  lazy: boolean;
 }
 
 const esc = (s: unknown): string =>
   String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+
+const baseOf = (f: string): string => f.slice(f.lastIndexOf("/") + 1);
 
 /** Adapt a wire node into the internal simulation node. */
 function toRNode(n: ComponentNode): RNode {
@@ -311,6 +353,7 @@ export function initGraph(opts: InitOptions): GraphController {
   const ringG = root.append("g");
   const linkG = root.append("g");
   const haloG = root.append("g");
+  const fileLabelG = root.append("g");
   const nodeG = root.append("g");
   const labelG = root.append("g");
 
@@ -327,6 +370,7 @@ export function initGraph(opts: InitOptions): GraphController {
   let controls: Controls = {
     mode: "strict",
     onlyRed: false,
+    onlyGreen: false,
     showRings: true,
     showBlame: false,
     search: "",
@@ -335,6 +379,7 @@ export function initGraph(opts: InitOptions): GraphController {
     blameRed: false,
     showLinks: false,
     highlightLinks: false,
+    showLabels: false,
   };
 
   // Current scene, rebuilt whenever the graph (vue vs vue+ts) changes.
@@ -343,6 +388,7 @@ export function initGraph(opts: InitOptions): GraphController {
   let nodeSel: d3.Selection<SVGCircleElement, RNode, SVGGElement, unknown> | null = null;
   let linkSel: d3.Selection<SVGLineElement, RLink, SVGGElement, unknown> | null = null;
   let labelSel: d3.Selection<SVGTextElement, RNode, SVGGElement, unknown> | null = null;
+  let fileLabelSel: d3.Selection<SVGTextElement, RNode, SVGGElement, unknown> | null = null;
   // Adjacency for hover (undirected), the import subtree ("down"/out) and the
   // supertree ("up"/inn). Rebuilt per graph; see ./select.ts for the contract.
   let ga: Adjacency = buildAdjacency([], []);
@@ -359,6 +405,23 @@ export function initGraph(opts: InitOptions): GraphController {
   let byId = new Map<string, RNode>();
   let hovered: RNode | null = null;
 
+  // Per-view I₀ on the value projection (type edges out of both sides, lazy
+  // out of the Ce side) — the exact number the score charges per import, and
+  // therefore the visual weight of every drawn edge.
+  let i0View = new Map<string, number>();
+  // FULL module-graph context (set independently of the shown view): the score
+  // runs on it, so the breakdown's contributor lists, ×I₀ tails and dependent
+  // paths read these — never the current view's adjacency.
+  let fullAdj: Adjacency = buildAdjacency([], []);
+  let fullNodes = new Map<string, { name: string; loc: number }>();
+  let i0Full = new Map<string, number>();
+  let fullEdgeInfo = new Map<
+    string,
+    { symbols?: string[]; via?: string[]; type?: boolean; lazy?: boolean }
+  >();
+  // Shipped import cycles, keyed per member for the detail panel's cycle row.
+  let cycleOf = new Map<string, CycleInfo>();
+
   // Click-to-isolate: ids reachable from the focused node. `dir` picks the walk
   // — "down" = its import subtree (what it uses), "up" = its supertree (what
   // uses it, i.e. what changes if it changes). null = no focus.
@@ -372,9 +435,11 @@ export function initGraph(opts: InitOptions): GraphController {
     controls.mode === "naive" ? n.errors === 0 : !n.strictRed;
   const color = (n: RNode): string => (n.analyzing ? NEUTRAL : isGreen(n) ? GREEN : RED);
 
-  // only-red + node focus (ignores the depth filter); isHidden adds the depth filter.
+  // only-red / only-green + node focus (ignores the depth filter); isHidden adds the depth filter.
   const hideBase = (d: RNode): boolean =>
-    (controls.onlyRed && isGreen(d)) || (focus !== null && !focus.set.has(d.id));
+    (controls.onlyRed && isGreen(d)) ||
+    (controls.onlyGreen && !isGreen(d)) ||
+    (focus !== null && !focus.set.has(d.id));
   const isHidden = (d: RNode): boolean =>
     hideBase(d) || (depthFocus !== null && d.height !== depthFocus);
 
@@ -396,15 +461,31 @@ export function initGraph(opts: InitOptions): GraphController {
     });
   }
 
+  // The visual weight of an edge is the exact number the score charges for it:
+  // the target's I₀ on the value projection. Type-only and lazy edges charge
+  // no comprehension (Phase 6), so they pin to the floor — the dashes explain
+  // why. Opacity is the primary channel ("a stable import is nearly free"
+  // renders as nearly invisible), width a secondary pop for heavy edges.
+  const linkWeight = (l: RLink): number =>
+    l.type || l.lazy ? 0 : (i0View.get(linkId(l.target)) ?? 0);
+  const linkOpacity = (l: RLink): number => 0.1 + 0.65 * linkWeight(l);
+
   // Bind link <line> elements to the visible subset and position them. Called
   // whenever focus/filters change — the default (no focus) renders nothing, so
   // the thousands of edges never hit the DOM until a node is selected.
+  // Base opacity/width are per-element attributes (NOT `.link` CSS): class
+  // rules override SVG presentation attributes, so `.hl`/`.dim` win naturally;
+  // `.hl` scales per edge through the `--hlo` custom property (higher floor so
+  // trace mode stays usable).
   function renderLinks(): void {
     linkSel = linkG
       .selectAll<SVGLineElement, RLink>("line")
       .data(visibleLinks(), (l) => `${linkId(l.source)}\n${linkId(l.target)}`)
       .join("line")
-      .attr("class", (l) => linkClass(l));
+      .attr("class", (l) => linkClass(l))
+      .attr("stroke-opacity", (l) => linkOpacity(l).toFixed(3))
+      .attr("stroke-width", (l) => (0.6 + 1.2 * linkWeight(l)).toFixed(2))
+      .style("--hlo", (l) => Math.max(0.35, linkOpacity(l)).toFixed(3));
     // Position each edge; x/y attrs land on the same selection.
     linkSel
       .attr("x1", (d) => (d.source as RNode).x!)
@@ -414,20 +495,33 @@ export function initGraph(opts: InitOptions): GraphController {
   }
 
   // Base class for the link overlay: hover-blue when "highlight links" is on,
-  // otherwise the muted default; type-only edges add `.type` (dashed). Hover
-  // then toggles `.hl`/`.dim` on top.
+  // otherwise the muted default; type-only edges add `.type` (dashed), lazy
+  // edges `.lazy` (a distinct dash). Hover then toggles `.hl`/`.dim` on top.
   function linkClass(l: RLink): string {
-    return `${controls.highlightLinks ? "link hl" : "link"}${l.type ? " type" : ""}`;
+    return `${controls.highlightLinks ? "link hl" : "link"}${l.type ? " type" : ""}${
+      l.lazy ? " lazy" : ""
+    }`;
   }
 
-  // Base (unweighted) instability of a node from the live adjacency: Ce/(Ce+Ca),
-  // identical to the server's edge weight. Used to show how much each import
-  // costs — a stable target (icons/constants, I₀→0) is nearly free.
-  const i0Of = (id: string): number => {
-    const ce = ga.out.get(id)?.size ?? 0;
-    const ca = ga.inn.get(id)?.size ?? 0;
-    return ce + ca === 0 ? 0 : ce / (ce + ca);
-  };
+  // Per-node I₀ = Ce/(Ce+Ca) on the value projection, mirroring the server:
+  // type-only edges leave both sides, lazy edges leave the Ce side only. The
+  // shared helper serves both the current view and the full module graph.
+  function projectedI0(graph: Graph): Map<string, number> {
+    const ceSync = new Map<string, number>();
+    const caStruct = new Map<string, number>();
+    for (const e of graph.edges) {
+      if (e.type) continue;
+      caStruct.set(e.to, (caStruct.get(e.to) ?? 0) + 1);
+      if (!e.lazy) ceSync.set(e.from, (ceSync.get(e.from) ?? 0) + 1);
+    }
+    const out = new Map<string, number>();
+    for (const n of graph.nodes) {
+      const ce = ceSync.get(n.id) ?? 0;
+      const ca = caStruct.get(n.id) ?? 0;
+      out.set(n.id, ce + ca === 0 ? 0 : ce / (ce + ca));
+    }
+    return out;
+  }
 
   // The tooltip is now a terse summary: filename, LOC, and the import links in
   // the "X consume it · consumes Y deps" form. Everything else (status, path,
@@ -447,58 +541,120 @@ export function initGraph(opts: InitOptions): GraphController {
   // Structured change-cost breakdown for the detail panel: which files drive
   // THIS file's change-cost, and by how much. Authoritative overhead per driver
   // comes from the server breakdown; the contributor lists (imports weighted by
-  // volatility, transitive dependents by LoC) are derived from the graph
-  // structure the tool already holds. Returns null until the score arrives.
+  // volatility, transitive dependents by LoC, per-dependent import paths) come
+  // from the FULL module graph — the graph the score ran on — whatever view is
+  // shown. Returns null until the score arrives.
   function buildBreakdown(d: RNode): NodeDetail["breakdown"] {
     if (!breakdown) return null;
     const bd = breakdown[d.id];
-    if (!bd) return { atFloor: true, drivers: [] };
-    const overhead = bd.comprehension + bd.blast + bd.types;
-    const share = (x: number) => (overhead > 0 ? Math.round((x / overhead) * 100) : 0);
+    const cycle = cycleOf.get(d.id) ?? null;
+    if (!bd && !cycle) return { atFloor: true, drivers: [] };
+    const nameOf = (id: string) => fullNodes.get(id)?.name ?? byId.get(id)?.name ?? id;
+    // Greppable provenance of one full-graph edge: the crossing symbols (and
+    // the barrel hop the resolution passed through), or the whole-module kind.
+    const whyOf = (from: string, to: string): string | undefined => {
+      const e = fullEdgeInfo.get(`${from}\n${to}`);
+      if (!e) return undefined;
+      if (e.symbols?.length) {
+        const via = e.via?.length ? ` (via ${e.via.map(nameOf).join(", ")})` : "";
+        return `imports ${e.symbols.join(", ")}${via}`;
+      }
+      return e.type ? "type-only import" : e.lazy ? "lazy (dynamic import)" : "whole-module import";
+    };
     const drivers: DetailDriver[] = [];
-    if (bd.comprehension > 0) {
-      const imports = [...(ga.out.get(d.id) ?? [])]
-        .map((id) => ({ n: byId.get(id)?.name ?? id, w: i0Of(id) }))
+    const overhead = bd ? bd.comprehension + bd.blast + bd.types : 0;
+    const share = (x: number) => (overhead > 0 ? Math.round((x / overhead) * 100) : 0);
+    if (bd && bd.comprehension > 0) {
+      const imports = [...(fullAdj.out.get(d.id) ?? [])]
+        .map((id) => ({ id, n: nameOf(id), w: i0Full.get(id) ?? 0 }))
         .sort((a, b) => b.w - a.w);
+      const volatile = imports.filter((r) => r.w >= 0.5).length;
       drivers.push({
         key: "comprehension",
         label: "excess coupling",
         color: DRIVER_COLOR.comprehension,
         share: share(bd.comprehension),
         meta: `${imports.length} imports, weighted ${bd.weightedFanout}`,
-        items: imports.map((r) => ({ name: r.n, tail: `×${r.w.toFixed(2)}` })),
+        action: `imports ${volatile} volatile ${volatile === 1 ? "module" : "modules"} — invert or split`,
+        items: imports.map((r) => ({
+          name: r.n,
+          tail: `×${r.w.toFixed(2)}`,
+          why: whyOf(d.id, r.id),
+        })),
       });
     }
-    if (bd.blast > 0) {
-      const deps = new Set(isolateSet(d.id, "up", ga));
-      deps.delete(d.id);
-      const rows = [...deps]
-        .map((id) => ({ n: byId.get(id)?.name ?? id, loc: byId.get(id)?.size ?? 0 }))
+    if (bd && bd.blast > 0) {
+      // One BFS over the full-graph importers gives every dependent AND its
+      // shortest import path back to this file: `toward` maps each dependent
+      // to its next hop toward the target.
+      const toward = new Map<string, string>();
+      const queue = [d.id];
+      const seen = new Set([d.id]);
+      while (queue.length) {
+        const v = queue.shift()!;
+        for (const u of fullAdj.inn.get(v) ?? []) {
+          if (!seen.has(u)) {
+            seen.add(u);
+            toward.set(u, v);
+            queue.push(u);
+          }
+        }
+      }
+      seen.delete(d.id);
+      const rows = [...seen]
+        .map((id) => ({ id, n: nameOf(id), loc: fullNodes.get(id)?.loc ?? 0 }))
         .sort((a, b) => b.loc - a.loc);
       const depLoc = rows.reduce((s, r) => s + r.loc, 0);
+      // "Why does `main` need attention if this changes?" — the shortest path
+      // plus the symbols crossing the final hop into this file.
+      const pathWhy = (id: string): string => {
+        const path: string[] = [id];
+        let cur = id;
+        while (cur !== d.id) {
+          cur = toward.get(cur)!;
+          path.push(cur);
+        }
+        const hop = path[path.length - 2]!;
+        const symbols = fullEdgeInfo.get(`${hop}\n${d.id}`)?.symbols;
+        const names = path.map(nameOf).join(" → ");
+        return symbols?.length ? `${names} — imports ${symbols.join(", ")}` : names;
+      };
       drivers.push({
         key: "blast",
         label: "change blast",
         color: DRIVER_COLOR.blast,
         share: share(bd.blast),
         meta:
-          `${deps.size} files (${depLoc} LOC, ${Math.round(bd.blastRadius * 100)}% of codebase) ` +
+          `${rows.length} files (${depLoc} LOC, ${Math.round(bd.blastRadius * 100)}% of codebase) ` +
           `depend on this`,
+        action: "volatile and widely imported — stabilize its own imports",
         instability: bd.instability,
-        items: rows.map((r) => ({ name: r.n, tail: `${r.loc} LOC` })),
+        items: rows.map((r) => ({ name: r.n, tail: `${r.loc} LOC`, why: pathWhy(r.id) })),
       });
     }
-    if (bd.types > 0) {
+    if (bd && bd.types > 0) {
       drivers.push({
         key: "types",
         label: "type errors",
         color: DRIVER_COLOR.types,
         share: share(bd.types),
         meta: `${d.errors} own ${d.errors === 1 ? "error" : "errors"}, costlier the wider it's depended on`,
+        action: `fix the ${d.errors} ${d.errors === 1 ? "error" : "errors"} here first — widest type-risk radius`,
         items: [],
       });
     }
-    if (bd.cxWeight > 1) {
+    if (cycle) {
+      drivers.push({
+        key: "cycle",
+        label: "import cycle",
+        color: DRIVER_COLOR.types,
+        share: null,
+        meta: `${cycle.members.length} files: ${cycle.label}`,
+        action: cycle.cut ? `break ${cycle.cut.label}` : undefined,
+        items: [],
+      });
+    }
+    if (bd && bd.cxWeight > 1) {
       drivers.push({
         key: "complexity",
         label: "complexity load",
@@ -509,7 +665,7 @@ export function initGraph(opts: InitOptions): GraphController {
         items: [],
       });
     }
-    return { atFloor: false, drivers };
+    return { atFloor: drivers.length === 0, drivers };
   }
 
   // Assemble the full structured detail for the hovered/selected node.
@@ -581,7 +737,7 @@ export function initGraph(opts: InitOptions): GraphController {
   // Recolour + recompute every mode-dependent readout. No relayout — this is
   // what the colour-mode / only-red / depth toggles call.
   function refresh(): void {
-    if (!current || !nodeSel || !linkSel || !labelSel) return;
+    if (!current || !nodeSel || !linkSel || !labelSel || !fileLabelSel) return;
     nodeSel.attr("fill", color);
 
     shownNodes = current.nodes.filter((d) => !isHidden(d));
@@ -646,13 +802,15 @@ export function initGraph(opts: InitOptions): GraphController {
 
   // Reapply the persistent view controls to the freshly-built selections.
   function applyControls(): void {
-    if (!nodeSel || !linkSel || !labelSel) return;
+    if (!nodeSel || !linkSel || !labelSel || !fileLabelSel) return;
     labelG.attr("display", controls.showRings ? null : "none");
+    fileLabelG.attr("display", controls.showLabels ? null : "none");
     nodeSel.style("display", (d) => (isHidden(d) ? "none" : null));
     // The focused root (set by a node click or a hotspot-row click) gets a
     // subtle glow so it's findable among its isolated dependents/subtree.
     nodeSel.classed("focus-root", (d) => focus !== null && d.id === focus.root);
     labelSel.style("display", (d) => (isHidden(d) ? "none" : null));
+    fileLabelSel.style("display", (d) => (isHidden(d) ? "none" : null));
     renderLinks();
     applySearch();
     renderHalos();
@@ -701,10 +859,12 @@ export function initGraph(opts: InitOptions): GraphController {
     if (!q && cm === null) {
       nodeSel.classed("dim", false).attr("r", (d) => nodeR(d));
       labelSel.classed("dim", false);
+      fileLabelSel?.classed("dim", false);
       return;
     }
     nodeSel.classed("dim", (d) => !hit(d)).attr("r", (d) => (hit(d) ? nodeR(d) + 4 : nodeR(d)));
     labelSel.classed("dim", (d) => !hit(d));
+    fileLabelSel?.classed("dim", (d) => !hit(d));
   }
 
   function setGraph(graph: Graph): void {
@@ -718,7 +878,9 @@ export function initGraph(opts: InitOptions): GraphController {
       source: e.from,
       target: e.to,
       type: e.type ?? false,
+      lazy: e.lazy ?? false,
     }));
+    i0View = projectedI0(graph);
     const maxHeight = graph.maxHeight;
     current = { nodes, links, maxHeight };
 
@@ -753,6 +915,7 @@ export function initGraph(opts: InitOptions): GraphController {
     linkG.selectAll("*").remove();
     nodeG.selectAll("*").remove();
     labelG.selectAll("*").remove();
+    fileLabelG.selectAll("*").remove();
     haloG.selectAll("*").remove();
 
     ringG
@@ -811,6 +974,14 @@ export function initGraph(opts: InitOptions): GraphController {
       .attr("font-size", (d) => (nodeR(d) * 1.35).toFixed(1))
       .text((d) => d.height);
 
+    fileLabelSel = fileLabelG
+      .selectAll<SVGTextElement, RNode>("text")
+      .data(nodes)
+      .join("text")
+      .attr("class", "flabel")
+      .attr("text-anchor", "middle")
+      .text((d) => baseOf(d.file));
+
     const tick = () => {
       linkSel!
         .attr("x1", (d) => (d.source as RNode).x!)
@@ -819,6 +990,7 @@ export function initGraph(opts: InitOptions): GraphController {
         .attr("y2", (d) => (d.target as RNode).y!);
       nodeSel!.attr("cx", (d) => d.x!).attr("cy", (d) => d.y!);
       labelSel!.attr("x", (d) => d.x!).attr("y", (d) => d.y!);
+      fileLabelSel!.attr("x", (d) => d.x!).attr("y", (d) => d.y! - nodeR(d) - 2);
       if (driver !== null) haloSel!.attr("cx", (d) => d.x!).attr("cy", (d) => d.y!);
     };
 
@@ -963,6 +1135,46 @@ export function initGraph(opts: InitOptions): GraphController {
     isolate(id, "up");
   }
 
+  // Panel cycle-row click: isolate exactly the cycle's members (whichever are
+  // nodes in the current view). The app shell switches the view to the module
+  // graph first when needed.
+  function focusSet(ids: string[]): void {
+    const present = ids.filter((id) => byId.has(id));
+    if (present.length === 0) return;
+    focus = { root: present[0]!, dir: "down", set: new Set(present) };
+    depthFocus = null;
+    refresh();
+    emitDetail();
+  }
+
+  // Full module-graph context for the breakdown + cycle rows (see the
+  // GraphController doc). Cheap to rebuild: maps only, no DOM.
+  function setFullGraph(full: Graph | null, cycles: CycleInfo[] | null): void {
+    if (!full) {
+      fullAdj = buildAdjacency([], []);
+      fullNodes = new Map();
+      i0Full = new Map();
+      fullEdgeInfo = new Map();
+      cycleOf = new Map();
+      return;
+    }
+    fullAdj = buildAdjacency(
+      full.nodes.map((n) => n.id),
+      full.edges.map((e) => ({ source: e.from, target: e.to })),
+    );
+    fullNodes = new Map(full.nodes.map((n) => [n.id, { name: n.name, loc: n.loc ?? 0 }]));
+    i0Full = projectedI0(full);
+    fullEdgeInfo = new Map(full.edges.map((e) => [`${e.from}\n${e.to}`, e]));
+    cycleOf = new Map();
+    for (const info of cycles ?? []) {
+      for (const member of info.members) {
+        cycleOf.set(member, info);
+      }
+    }
+    // The detail panel's breakdown reads all of the above.
+    emitDetail();
+  }
+
   function destroy(): void {
     if (sim) sim.stop();
     svg.on(".zoom", null);
@@ -973,9 +1185,11 @@ export function initGraph(opts: InitOptions): GraphController {
 
   return {
     setGraph,
+    setFullGraph,
     setControls,
     toggleDepth,
     focusDependents,
+    focusSet,
     setDriverHighlight,
     setBreakdown,
     destroy,

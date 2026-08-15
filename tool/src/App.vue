@@ -1,11 +1,11 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, reactive, ref, watch } from "vue";
+import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from "vue";
 import type { ComponentGraph, Diagnostics, MaintainabilityDriver } from "../../src/shared/types.ts";
 import { fetchDiagnostics, fetchGraph, fetchSearch } from "./api/client.ts";
 import ControlPanel from "./components/ControlPanel.vue";
 import GraphChart from "./components/GraphChart.vue";
 import SourceModal from "./components/SourceModal.vue";
-import type { Controls, NodeDetail, Readouts } from "./graph/render.ts";
+import type { Controls, CycleInfo, NodeDetail, Readouts } from "./graph/render.ts";
 
 /**
  * Root of the dev tool. Owns the live data lifecycle (progressive polling of
@@ -26,11 +26,13 @@ const error = ref<string | null>(null);
 const view = reactive({
   mode: "strict" as Controls["mode"],
   onlyRed: false,
+  onlyGreen: false,
   showRings: true,
   showBlame: false,
-  includeTs: false,
+  includeTs: true,
   showLinks: false,
   highlightLinks: false,
+  showLabels: false,
   search: "",
   contentSearch: "",
   blameGreen: true,
@@ -48,6 +50,7 @@ const contentMatches = ref<Set<string> | null>(null);
 const controls = computed<Controls>(() => ({
   mode: view.mode,
   onlyRed: view.onlyRed,
+  onlyGreen: view.onlyGreen,
   showRings: view.showRings,
   showBlame: view.showBlame,
   search: view.search,
@@ -56,18 +59,58 @@ const controls = computed<Controls>(() => ({
   blameRed: view.blameRed,
   showLinks: view.showLinks,
   highlightLinks: view.highlightLinks,
+  showLabels: view.showLabels,
 }));
 
-// `include TS files` swaps the component-only graph for the full module graph.
+// `only show vue files` swaps the full module graph back to the component-only
+// graph; the full (vue+ts) graph is the default view.
 const activeGraph = computed(() => {
   if (!graph.value) return null;
   return view.includeTs ? graph.value.full : graph.value.vue;
 });
 
+// Whether the project has any `.vue` components — gates the "only show vue
+// files" toggle, which is meaningless (and would blank the graph) otherwise.
+const hasVue = computed(() => (graph.value?.vue.nodes.length ?? 0) > 0);
+
 const header = computed(() => ({
   complete: graph.value?.complete ?? false,
   appUrl: diag.value?.appUrl ?? null,
+  projectName: diag.value?.projectName ?? null,
 }));
+
+// Browser tab reflects the analyzed project by name (falls back to the tool's own name).
+watch(
+  () => header.value.projectName,
+  (name) => {
+    document.title = name ?? "tsmigrate";
+  },
+  { immediate: true },
+);
+
+// Shipped import cycles preprocessed for the panel + renderer: display label
+// and the cut hint — the internal value edge crossing the fewest symbols is
+// the cheapest to sever (type-only edges are not what holds a cycle together).
+const cycleInfos = computed<CycleInfo[]>(() => {
+  const g = graph.value;
+  if (!g) return [];
+  const baseOf = (id: string) => id.slice(id.lastIndexOf("/") + 1);
+  return g.maintainability.cycles.map((members) => {
+    const set = new Set(members);
+    let cut: CycleInfo["cut"] = null;
+    let best = Infinity;
+    for (const e of g.full.edges) {
+      if (e.type || !set.has(e.from) || !set.has(e.to)) continue;
+      const n = e.symbols?.length ?? Infinity;
+      if (n < best) {
+        best = n;
+        const count = n === Infinity ? "whole module" : `${n} ${n === 1 ? "symbol" : "symbols"}`;
+        cut = { from: e.from, to: e.to, label: `${baseOf(e.from)} → ${baseOf(e.to)} (${count})` };
+      }
+    }
+    return { members, label: members.map(baseOf).join(" ↔ "), cut };
+  });
+});
 
 const chart = ref<InstanceType<typeof GraphChart> | null>(null);
 
@@ -82,9 +125,27 @@ function toggleDriver(d: MaintainabilityDriver) {
   activeDriver.value = activeDriver.value === d ? null : d;
 }
 
+// Actionability contract (§9): the score's hotspots and cycles live in the
+// FULL module graph, but the default view is `.vue`-only. Clicking one must
+// never silently no-op — switch the view on first, then focus.
+async function focusNode(id: string) {
+  if (!view.includeTs && graph.value && !graph.value.vue.nodes.some((n) => n.id === id)) {
+    view.includeTs = true;
+    await nextTick();
+  }
+  chart.value?.focusDependents(id);
+}
+async function focusCycle(members: string[]) {
+  const inVue = (id: string) => graph.value?.vue.nodes.some((n) => n.id === id) ?? false;
+  if (!view.includeTs && !members.every(inVue)) {
+    view.includeTs = true;
+    await nextTick();
+  }
+  chart.value?.focusSet(members);
+}
+
 let timer: ReturnType<typeof setTimeout> | undefined;
 let stopped = false;
-let appliedTsDefault = false;
 
 // Poll fast while analysis runs, then slowly (cheap ?since probes) once
 // complete so watcher-driven changes still surface.
@@ -93,18 +154,6 @@ async function poll() {
     const res = await fetchGraph(graph.value?.version);
     if (!("unchanged" in res)) {
       graph.value = res;
-      // A tsx-only project (e.g. a component library like Vuetify) has no
-      // `.vue` nodes; once the crawl completes, default the view to the full
-      // module graph so it isn't blank. Fires once — a manual toggle sticks.
-      if (
-        !appliedTsDefault &&
-        res.complete &&
-        res.vue.nodes.length === 0 &&
-        res.full.nodes.length > 0
-      ) {
-        view.includeTs = true;
-        appliedTsDefault = true;
-      }
     }
     error.value = null;
   } catch (err) {
@@ -165,6 +214,8 @@ onUnmounted(() => {
     v-if="activeGraph"
     ref="chart"
     :graph="activeGraph"
+    :full-graph="graph?.full ?? null"
+    :cycles="cycleInfos"
     :controls="controls"
     :driver="activeDriver"
     :contributions="graph?.maintainability.contributions ?? null"
@@ -177,11 +228,13 @@ onUnmounted(() => {
   <ControlPanel
     v-model:mode="view.mode"
     v-model:only-red="view.onlyRed"
+    v-model:only-green="view.onlyGreen"
     v-model:show-rings="view.showRings"
     v-model:show-blame="view.showBlame"
     v-model:include-ts="view.includeTs"
     v-model:show-links="view.showLinks"
     v-model:highlight-links="view.highlightLinks"
+    v-model:show-labels="view.showLabels"
     v-model:search="view.search"
     v-model:content-search="view.contentSearch"
     v-model:blame-green="view.blameGreen"
@@ -192,8 +245,11 @@ onUnmounted(() => {
     :maintainability="graph?.maintainability ?? null"
     :active-driver="activeDriver"
     :node-detail="nodeDetail"
+    :cycles="cycleInfos"
+    :has-vue="hasVue"
     @depth-click="chart?.toggleDepth($event)"
-    @focus-node="chart?.focusDependents($event)"
+    @focus-node="focusNode($event)"
+    @cycle-click="focusCycle($event)"
     @driver-click="toggleDriver($event)"
   />
 
@@ -202,6 +258,17 @@ onUnmounted(() => {
     class="fixed bottom-3 right-3 rounded-md border border-red/50 bg-panel/95 px-3 py-2 text-xs text-red"
   >
     {{ error }}
+  </p>
+
+  <!-- §12 blind-spot banner: auto-imported bindings have no import statements,
+       so their edges are missing and blast radius reads falsely LOW. -->
+  <p
+    v-if="graph?.autoImportManifests.length"
+    class="fixed top-3 right-3 max-w-110 rounded-md border border-warn/50 bg-panel/95 px-3 py-2 text-xs text-warn"
+    :title="graph.autoImportManifests.join('\n')"
+  >
+    auto-imports detected — some bindings are invisible to the graph; coupling and blast radius are
+    under-reported
   </p>
 
   <SourceModal :node-id="source?.id ?? null" :file="source?.file ?? null" @close="source = null" />

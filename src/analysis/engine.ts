@@ -39,9 +39,10 @@ export class AnalysisEngine {
   private _version = 1;
   private graphDirty = true;
   private vueNodes: string[] = [];
-  private collapsedEdges: ComponentEdge[] = [];
+  private componentEdges: ComponentEdge[] = [];
   private files: CrawlFile[] = [];
-  private rawEdges: ComponentEdge[] = [];
+  private moduleEdges: ComponentEdge[] = [];
+  private autoImportManifests: string[] = [];
   private queue: Array<() => Promise<void>> = [];
   private running = 0;
   private scheduled = new Set<string>();
@@ -119,11 +120,18 @@ export class AnalysisEngine {
       const entries = await findEntries(this.host);
       const crawl = entries.length
         ? await crawlGraph(this.host, entries)
-        : { nodes: [], edges: [], files: [], rawEdges: [] };
+        : {
+            nodes: [],
+            componentEdges: [],
+            files: [],
+            moduleEdges: [],
+            autoImportManifests: [],
+          };
       this.vueNodes = crawl.nodes;
-      this.collapsedEdges = crawl.edges;
+      this.componentEdges = crawl.componentEdges;
       this.files = crawl.files;
-      this.rawEdges = crawl.rawEdges;
+      this.moduleEdges = crawl.moduleEdges;
+      this.autoImportManifests = crawl.autoImportManifests;
       this._version++;
     }
 
@@ -137,8 +145,8 @@ export class AnalysisEngine {
 
     const vueIds = new Set(this.vueNodes);
     const fullIds = new Set(this.files.map((file) => file.id));
-    const vue = makeGraph(vueIds, this.collapsedEdges, facts, this.host.root);
-    const full = makeGraph(fullIds, this.rawEdges, facts, this.host.root);
+    const vue = makeGraph(vueIds, this.componentEdges, facts, this.host.root);
+    const full = makeGraph(fullIds, this.moduleEdges, facts, this.host.root);
 
     return {
       version: this._version,
@@ -147,6 +155,7 @@ export class AnalysisEngine {
       vue,
       full,
       maintainability: scoreMaintainability(full),
+      autoImportManifests: this.autoImportManifests,
     };
   }
 

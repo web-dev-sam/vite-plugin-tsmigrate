@@ -21,7 +21,7 @@ effort of reading one line once):
 ```
 
 ```math
-\mathrm{type}(m) = \begin{cases} \gamma\,\bigl(1 + \delta\,r(m)\bigr) & m \text{ has a type error} \\ 0 & \text{otherwise} \end{cases}
+\mathrm{type}(m) = \begin{cases} \gamma\,\bigl(1 + \delta\,r_{\text{type}}(m)\bigr) & m \text{ has a type error} \\ 0 & \text{otherwise} \end{cases}
 ```
 
 The **complexity weight** $W(m)=1+\lambda\,\dfrac{\rho(m)}{\rho(m)+D_0}$ scales the
@@ -55,9 +55,36 @@ large style block does not inflate a file's weight (nor its graph node size).
 
 ## The terms
 
-All quantities come from the **full module graph** (`.vue` + `.ts`, raw import
-edges — not the barrel-collapsed `vue` view), where an edge $u \to v$ means
-"$u$ imports $v$".
+All quantities come from the **full module graph** (`.vue` + `.ts`), whose
+edges are **symbol-resolved definition edges** (see
+[symbol-resolution.md](./symbol-resolution.md)): a value/type import points at
+the module that _defines_ the imported symbol — barrels and re-export hubs are
+transparent — while whole-module dependencies (side-effect, namespace, dynamic
+imports) are a single edge to the module itself. An edge $u \to v$ means "$u$
+depends on $v$'s definition".
+
+### Edge projections
+
+Edges feed the terms through **per-kind projections**
+([symbol-resolution.md §2](./symbol-resolution.md)):
+
+- **Type-only edges** (`import type`, `import { type X }`) leave every
+  structural term — $C_e^{w}$, $C_a$, $I$ and the blast radius $r$. A
+  type-only dependent is re-verified by the **compiler**, not by a human
+  re-reasoning about behaviour; type-only importers make a module _freer_ to
+  change. They still carry type risk: the radius in the type term,
+  $r_{\text{type}}$, is reachability over **all** edges, so a broken type
+  propagates to precisely its type-dependents.
+- **Lazy edges** (`import(...)`, `import.meta.glob`) leave only the
+  **importer's** $C_e^{w}$ (and so its instability numerator): a route table
+  globbing 200 pages is a declarative registry, not comprehension load. The
+  targets keep their fan-in, reachability and blast radius — a broken page
+  still breaks navigation.
+- Everything else — including synchronous side-effect imports, which execute
+  at module load — counts everywhere.
+- Cycle detection runs on the **structural** projection: `import type`
+  back-edges are legal TS and no runtime hazard, so a cycle held together
+  only by type edges does not exist for the score.
 
 ### Comprehension — $`\alpha\,\max(0,\,C_e^{w}(m)-K)`$
 
@@ -96,18 +123,21 @@ factors:
 
 - **Blast radius** $r(m) = \dfrac{\text{LoC transitively importing } m}{\sum_k \mathrm{loc}(k)} \in [0, 1]$
   — the fraction of the codebase that would need re-verifying if $m$'s
-  behaviour changed. Blast radius is computed over the graph's strongly-connected
+  behaviour changed, computed on the structural projection (value edges,
+  sync + lazy). Blast radius is computed over the graph's strongly-connected
   condensation, so an import **cycle** folds its entire LoC into every member's
   blast radius (cycle members are mutual dependents). A cycle is therefore
   penalised _through_ blast rather than by an ad-hoc constant.
 
-### Type risk — $`\gamma\,(1 + \delta\,r(m))`$ for red files
+### Type risk — $`\gamma\,(1 + \delta\,r_{\text{type}}(m))`$ for red files
 
 This is where type errors enter the score, as a **first-class term** — the
 graph is a TypeScript-migration view, and the score must track red → green.
 Every file that carries at least one type error costs $\gamma$ extra directly
 (so the score responds to the _amount_ of red code, even in leaves that nothing
-imports), and that cost is **amplified by blast radius** via $\delta$: a bad type in a
+imports), and that cost is **amplified by the type-risk radius**
+$r_{\text{type}}$ (reachability over _all_ edges, type-only included — see
+[Edge projections](#edge-projections)) via $\delta$: a bad type in a
 foundational module the whole codebase imports is far worse than one in an
 isolated leaf.
 
@@ -150,14 +180,22 @@ the runaway of the naive model.)
   Clicking a driver row highlights each node in the graph with a ring in that
   driver's colour, its opacity set by the file's contribution to that driver
   (`contributions` on the wire, normalised to `[0,1]` by the top contributor).
-- **in cycles** — the fraction of LoC trapped in import cycles.
+- **in cycles** — the fraction of LoC trapped in **structural** import cycles,
+  with the largest cycles listed (`cycles` on the wire): each row names the
+  members and the cheapest edge to sever — the cycle edge crossing the fewest
+  symbols; clicking a row isolates the members in the graph.
 - **typed** — LoC-weighted typed fraction (omitted when the type pass is off).
 - **complexity load** — how much of the overhead exists _because_ flaws sit in
   complex, branch-dense files (the $W>1$ amplification). 0 when the code is
   flaw-free or uniformly simple.
 - **hotspots** — the files dragging the score down most (highest overhead above their own floor), each with its fan-out,
   fan-in, instability, and blast radius. This is where to look first: lower these and
-  the score rises.
+  the score rises. Clicking a hotspot isolates its dependents, switching to the
+  module view first when the file isn't a `.vue` node.
+- **edge weight** — every drawn edge's opacity/width is the exact number the
+  score charges for it: the target's $I_0$ on the value projection. Stable
+  imports render nearly invisible; volatile hubs collect converging bold
+  lines. Type-only and lazy edges sit at the floor (their structural charge is 0) with distinct dashes.
 
 ## Parameters
 
@@ -174,6 +212,25 @@ The model's constants are defined once in
 | $\lambda$ | max complexity amplification of a file's flaw cost   | `2`     |
 | $D_0$     | decision density at half amplification (cc / LoC)    | `0.3`   |
 
+## Recorded scores (symbol-resolution rollout)
+
+Scores on the three playgrounds at each accuracy step
+(`node scripts/score.mjs`), documenting how much of the old numbers was
+barrel-edge distortion. The goal was accuracy, not a higher number — both
+directions appear across terms:
+
+| Playground           | raw file edges | symbol-resolved (steps 1–3) | + namespace narrowing & projections (5–6) |
+| -------------------- | -------------- | --------------------------- | ----------------------------------------- |
+| `playground` (vben)  | 86             | 92                          | 94                                        |
+| `playground-vuetify` | 94             | 94                          | 95                                        |
+| `playground-shadcn`  | 99             | 99                          | 99                                        |
+
+Notable shifts: vben's `cycleLoc` fell 0.088 → 0.006 and vuetify's
+0.097 → 0.004 (cycles held together by `import type` back-edges are no
+hazard); vuetify's comprehension share rose (fan-out its `export *` chains
+used to hide surfaced at real consumers); definer blast collapsed through the
+`@vben/*` barrel layers.
+
 ## Limits — what an import graph cannot see
 
 The score is honest about its blind spots; read it as a _relative_ signal, not
@@ -186,7 +243,11 @@ an absolute verdict:
 - **Real churn** — volatility is proxied by instability ($I$). A frequently
   edited but dependency-free leaf looks stable to the model. True churn needs
   per-file commit history the crawl does not yet collect.
-- **Semantic coupling** — event buses, dependency injection, string-keyed
-  registries, and dynamic imports the static import scanner misses.
+- **Semantic coupling** — event buses, dependency injection, and string-keyed
+  registries the static import scanner misses. **Auto-imports** (Nuxt /
+  `unplugin-*`) are the named worst case: bindings with no import statement
+  at all, so blast radius reads falsely LOW. The crawl detects the generated
+  manifests and the tool shows a warning banner
+  ([symbol-resolution.md §12](./symbol-resolution.md)).
 - **Test coverage** — arguably the strongest maintainability signal, and
   entirely invisible to a dependency graph.

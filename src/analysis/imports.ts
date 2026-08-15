@@ -44,6 +44,30 @@ export type ExportRef =
   // `export const x`, `export function x`, `export default …`, `export { local }`.
   | { kind: "local"; exportName: string; local: string | null };
 
+/**
+ * Statically-observed usage of one `import * as local from source` binding
+ * (docs/symbol-resolution.md §5). `members` lists the member names read via
+ * static access (`ns.X`, `ns?.X`, `ns["X"]`, `ns.X` in type positions);
+ * `members: null` means narrowing is unsafe and `cause` names why:
+ *
+ * - `namespaceEscape` — the binding escapes static analysis: used bare
+ *   (`f(ns)`, `export { ns }`, `export default ns`), spread, enumerated
+ *   (`Object.keys(ns)`, `for (… in ns)`, `typeof ns`), or read with a
+ *   dynamic key (`ns[expr]`).
+ * - `namespaceShadowed` — a local declaration re-binds the name somewhere in
+ *   the file (scope-insensitive on purpose: over-approximate, never miss).
+ * - `sfcTemplateBlindSpot` — `.vue` files are never narrowed: the crawl
+ *   parses `<script>` only, so template-only usage is invisible.
+ */
+export type NamespaceUsage =
+  | { local: string; source: string; members: string[]; cause: null }
+  | {
+      local: string;
+      source: string;
+      members: null;
+      cause: "namespaceEscape" | "namespaceShadowed" | "sfcTemplateBlindSpot";
+    };
+
 /** Everything the crawl needs from one module's source. */
 export interface ModuleRecord {
   imports: ImportRef[];
@@ -57,6 +81,8 @@ export interface ModuleRecord {
    * graph nodes.
    */
   globs: string[];
+  /** Per-namespace-import usage, for §5 narrowing. Empty when none exist. */
+  nsUsage: NamespaceUsage[];
 }
 
 // `import.meta.glob('pat')` / `import.meta.globEager(['a','b'])` — the first arg
@@ -188,15 +214,206 @@ function exportNameOf(n: { kind: string; name: string | null }): string {
   return n.kind === "Default" ? "default" : (n.name ?? "");
 }
 
+/** Names bound by a binding pattern (params, declarator ids, catch params). */
+function patternNames(node: unknown, out: string[] = []): string[] {
+  if (Array.isArray(node)) {
+    for (const item of node) {
+      patternNames(item, out);
+    }
+    return out;
+  }
+  if (!node || typeof node !== "object") {
+    return out;
+  }
+  const n = node as Record<string, unknown>;
+  switch (n.type) {
+    case "Identifier":
+      out.push(n.name as string);
+      break;
+    case "ObjectPattern":
+      patternNames(n.properties, out);
+      break;
+    case "Property":
+      patternNames(n.value, out);
+      break;
+    case "ArrayPattern":
+      patternNames(n.elements, out);
+      break;
+    case "AssignmentPattern":
+      patternNames(n.left, out);
+      break;
+    case "RestElement":
+      patternNames(n.argument, out);
+      break;
+    case "TSParameterProperty":
+      patternNames(n.parameter, out);
+      break;
+    default:
+      break;
+  }
+  return out;
+}
+
+/**
+ * Walk a program collecting static member reads on each namespace local in
+ * `targets` (local → source), plus every condition that makes narrowing
+ * unsafe (escape / shadowing — see `NamespaceUsage`). The walk is
+ * over-approximate by construction: any reference it cannot classify as a
+ * static member read fails the local into a whole-module dependency.
+ */
+function collectNamespaceUsage(program: unknown, targets: Map<string, string>): NamespaceUsage[] {
+  const members = new Map<string, Set<string>>();
+  const failed = new Map<string, "namespaceEscape" | "namespaceShadowed">();
+  for (const local of targets.keys()) {
+    members.set(local, new Set());
+  }
+  const fail = (local: string, cause: "namespaceEscape" | "namespaceShadowed"): void => {
+    if (!failed.has(local)) {
+      failed.set(local, cause);
+    }
+  };
+  const targetOf = (node: unknown): string | null => {
+    const n = node as Record<string, unknown> | null;
+    return n && n.type === "Identifier" && targets.has(n.name as string)
+      ? (n.name as string)
+      : null;
+  };
+  const shadowCheck = (pattern: unknown): void => {
+    for (const name of patternNames(pattern)) {
+      if (targets.has(name)) {
+        fail(name, "namespaceShadowed");
+      }
+    }
+  };
+
+  const walk = (node: unknown): void => {
+    if (Array.isArray(node)) {
+      for (const item of node) {
+        walk(item);
+      }
+      return;
+    }
+    if (!node || typeof node !== "object") {
+      return;
+    }
+    const n = node as Record<string, unknown>;
+    switch (n.type) {
+      case "ImportDeclaration":
+      case "ExportAllDeclaration":
+        return; // module-request positions never reference a local
+      case "ExportNamedDeclaration":
+        if (n.source) {
+          return; // `export { x } from "y"` — no local references
+        }
+        walk(n.declaration);
+        // `export { ns }` — the local slot is a real reference (an escape).
+        for (const spec of (n.specifiers as unknown[]) ?? []) {
+          walk((spec as Record<string, unknown>).local);
+        }
+        return;
+      case "MemberExpression": {
+        const local = targetOf(n.object);
+        if (local) {
+          const prop = n.property as Record<string, unknown>;
+          if (!n.computed && prop?.type === "Identifier") {
+            members.get(local)!.add(prop.name as string); // ns.X / ns?.X
+            return;
+          }
+          if (n.computed && prop?.type === "Literal" && typeof prop.value === "string") {
+            members.get(local)!.add(prop.value); // ns["X"]
+            return;
+          }
+          fail(local, "namespaceEscape"); // ns[expr] — dynamic key
+          walk(n.property);
+          return;
+        }
+        walk(n.object);
+        if (n.computed) {
+          walk(n.property);
+        }
+        return;
+      }
+      case "TSQualifiedName": {
+        // Type position: `ns.Foo` — a statically-known member.
+        const local = targetOf(n.left);
+        if (local) {
+          members.get(local)!.add((n.right as Record<string, unknown>).name as string);
+          return;
+        }
+        walk(n.left);
+        return;
+      }
+      case "Property":
+      case "PropertyDefinition":
+      case "MethodDefinition":
+        if (n.computed) {
+          walk(n.key); // `{ [ns.X]: v }` — the key references ns
+        }
+        walk(n.value);
+        return;
+      case "VariableDeclarator":
+        shadowCheck(n.id);
+        walk(n.id);
+        walk(n.init);
+        return;
+      case "FunctionDeclaration":
+      case "FunctionExpression":
+      case "ArrowFunctionExpression":
+        shadowCheck(n.id);
+        shadowCheck(n.params);
+        walk(n.params);
+        walk(n.body);
+        return;
+      case "CatchClause":
+        shadowCheck(n.param);
+        walk(n.param);
+        walk(n.body);
+        return;
+      case "ClassDeclaration":
+      case "ClassExpression":
+        shadowCheck(n.id);
+        walk(n.superClass);
+        walk(n.body);
+        return;
+      case "Identifier": {
+        // Any reference not consumed above escapes static analysis: bare use,
+        // spread, enumeration, `export default ns`, `typeof ns`, …
+        const name = n.name as string;
+        if (targets.has(name)) {
+          fail(name, "namespaceEscape");
+        }
+        walk(n.typeAnnotation); // param types may hold `ns.Foo` qualified names
+        return;
+      }
+      default:
+        for (const key in n) {
+          const value = n[key];
+          if (value && typeof value === "object") {
+            walk(value);
+          }
+        }
+    }
+  };
+  walk(program);
+
+  return [...targets].map(([local, source]) => {
+    const cause = failed.get(local);
+    return cause
+      ? { local, source, members: null, cause }
+      : { local, source, members: [...members.get(local)!].sort(), cause: null };
+  });
+}
+
 /** Static imports/exports (oxc) plus dynamic/glob specifiers (regex). */
 export function parseModule(code: string, filename: string): ModuleRecord {
   const imports: ImportRef[] = [];
   const exports: ExportRef[] = [];
   const dynamic: string[] = [];
   const globs: string[] = [];
+  const nsUsage: NamespaceUsage[] = [];
 
   try {
-    const { module } = parseSync(filename, code, { lang: langOf(filename) });
+    const { module, program } = parseSync(filename, code, { lang: langOf(filename) });
     for (const imp of module.staticImports) {
       const bindings: ImportBinding[] = imp.entries.map((e) => ({
         local: e.localName.value || null,
@@ -241,6 +458,27 @@ export function parseModule(code: string, filename: string): ModuleRecord {
         }
       }
     }
+
+    // §5 namespace precision: collect member usage for every namespace local.
+    // `.vue` scripts are never narrowed — the template (unparsed) may use any
+    // member, so the whole-module edge must stay (`sfcTemplateBlindSpot`).
+    const nsTargets = new Map<string, string>();
+    for (const imp of imports) {
+      for (const b of imp.bindings) {
+        if (b.imported.kind === "namespace" && b.local) {
+          nsTargets.set(b.local, imp.source);
+        }
+      }
+    }
+    if (nsTargets.size > 0) {
+      if (filename.endsWith(".vue")) {
+        for (const [local, source] of nsTargets) {
+          nsUsage.push({ local, source, members: null, cause: "sfcTemplateBlindSpot" });
+        }
+      } else {
+        nsUsage.push(...collectNamespaceUsage(program, nsTargets));
+      }
+    }
   } catch {
     // Unparseable source contributes no static graph; dynamic/glob still scanned.
   }
@@ -260,7 +498,7 @@ export function parseModule(code: string, filename: string): ModuleRecord {
     }
   }
 
-  return { imports, exports, dynamic, globs };
+  return { imports, exports, dynamic, globs, nsUsage };
 }
 
 /** Concatenated contents of every `<script>` block in an SFC. */

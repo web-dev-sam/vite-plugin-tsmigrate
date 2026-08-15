@@ -17,7 +17,7 @@ import type {
  *
  *   cost(m) = loc(m) · ( 1 + α·max(0, Ceʷ(m) − K) + β·I(m)·r(m) + type(m) )
  *             └ read ┘   └──── comprehension ─────┘  └── blast ──┘  └ types ┘
- *   type(m) = red(m) ? γ·(1 + δ·r(m)) : 0
+ *   type(m) = red(m) ? γ·(1 + δ·r_type(m)) : 0
  *
  * where Ceʷ(m) = Σ_{d ∈ imports(m)} I₀(d) is the *volatility-weighted* fan-out:
  * each import counts by how unstable its target is, so depending on a stable
@@ -36,6 +36,13 @@ import type {
  *
  * Import cycles fold their whole LoC into every member's blast radius (mutual
  * dependents), so a cycle is penalised through blast without an ad-hoc term.
+ *
+ * Edges feed the terms through per-kind projections (docs/symbol-resolution.md
+ * §2): type-only edges are compiler-verified and leave every structural term —
+ * Ceʷ, Ca, I and r — driving only the type-risk radius r_type (reachability
+ * over ALL edges) that amplifies `type(m)`; lazy dynamic-import/glob edges
+ * charge no comprehension to the importer (out of Ceʷ and the instability
+ * numerator) but keep their targets' fan-in, reachability and blast radius.
  *
  * The score normalises the summed cost against the floor Σ loc (every file
  * read once, no excess coupling, fully typed): `score = 100 · floorLoc /
@@ -61,6 +68,8 @@ const LAMBDA = 2;
 const DENSITY_HALF = 0.3;
 /** Max hotspots returned — the actionable shortlist, not the whole graph. */
 const MAX_HOTSPOTS = 12;
+/** Max cycles shipped (largest by LoC) — enough to act on, not an SCC dump. */
+const MAX_CYCLES = 8;
 
 export function scoreMaintainability(graph: Graph): Maintainability {
   const { nodes, edges } = graph;
@@ -89,93 +98,85 @@ export function scoreMaintainability(graph: Graph): Maintainability {
       hotspots: [],
       contributions: {},
       breakdown: {},
+      cycles: [],
     };
   }
 
   const index = new Map<string, number>();
   nodes.forEach((node, i) => index.set(node.id, i));
 
-  // Directed children (importer → imported) and parents (imported → importer).
-  const children: number[][] = Array.from({ length: n }, () => []);
-  const parents: number[][] = Array.from({ length: n }, () => []);
-  const selfLoop = new Set<number>();
-  for (const { from, to } of edges) {
-    const a = index.get(from);
-    const b = index.get(to);
-    if (a === undefined || b === undefined) {
+  // Per-term edge projections (docs/symbol-resolution.md §2):
+  // - TYPE-ONLY edges leave the structural terms entirely (Ce^w, Ca, I, blast
+  //   radius): a type-only dependent is re-verified by the compiler, not by a
+  //   human re-reasoning about behavior. They still carry type risk, so they
+  //   count in the type-risk radius that amplifies the `types` term.
+  // - LAZY edges (dynamic import / glob) leave only the importer's
+  //   comprehension side (Ce^w and the instability numerator): a route table
+  //   globbing 200 pages is a declarative registry, not comprehension load.
+  //   The targets keep their fan-in, reachability and blast radius — a broken
+  //   page still breaks navigation.
+  // - Everything else (incl. synchronous side-effect imports) counts everywhere.
+  const children: number[][] = Array.from({ length: n }, () => []); // structural (value)
+  const parents: number[][] = Array.from({ length: n }, () => []); // structural (value)
+  const syncChildren: number[][] = Array.from({ length: n }, () => []); // comprehension
+  const childrenAll: number[][] = Array.from({ length: n }, () => []); // type risk
+  for (const edge of edges) {
+    const a = index.get(edge.from);
+    const b = index.get(edge.to);
+    if (a === undefined || b === undefined || a === b) {
       continue;
     }
-    if (a === b) {
-      selfLoop.add(a);
+    childrenAll[a]!.push(b);
+    if (edge.type) {
       continue;
     }
     children[a]!.push(b);
     parents[b]!.push(a);
+    if (!edge.lazy) {
+      syncChildren[a]!.push(b);
+    }
   }
 
   // Base (unweighted) instability per node, used to weight each import edge:
-  // I₀ = Ce/(Ce+Ca). A first pass so the volatility-weighted fan-out below is
-  // well-defined without a fixpoint. An import of a stable target (low I₀, e.g.
-  // an icon/constants barrel) is nearly free; a volatile one costs a full edge.
+  // I₀ = Ce/(Ce+Ca) on the projections — synchronous value imports over
+  // structural importers. A first pass so the volatility-weighted fan-out
+  // below is well-defined without a fixpoint. An import of a stable target
+  // (low I₀, e.g. an icon/constants barrel) is nearly free; a volatile one
+  // costs a full edge.
   const i0 = new Float64Array(n);
   for (let i = 0; i < n; i++) {
-    const ce = children[i]!.length;
+    const ce = syncChildren[i]!.length;
     const ca = parents[i]!.length;
     i0[i] = ce + ca === 0 ? 0 : ce / (ce + ca);
   }
 
-  const { comp, compCount } = stronglyConnected(children, n);
+  // Two reachability passes over the projections (§2): the structural one
+  // (value edges — sync + lazy) drives blast radius and cycle detection; the
+  // full one (every edge, incl. type-only) drives the type-risk radius — a
+  // broken type propagates to precisely its type-dependents, which is what
+  // `strictRed` already models. `import type` cycles are legal TS and carry no
+  // runtime hazard, so cycle flags come from the structural pass only.
+  const structural = dependentReach(children, n, loc);
+  const typeRisk = dependentReach(childrenAll, n, loc);
+  const inCycle = (i: number) => structural.compSize[structural.comp[i]!]! > 1;
 
-  // Per-component LoC rollup and size (to flag cycles).
-  const compLoc = new Float64Array(compCount);
-  const compSize = new Int32Array(compCount);
+  // The actionable cycle shortlist: members of the largest structural SCCs.
+  const cycleMembers = new Map<number, string[]>();
   for (let i = 0; i < n; i++) {
-    const c = comp[i]!;
-    compLoc[c]! += loc(i);
-    compSize[c]! += 1;
-  }
-  const inCycle = (i: number) => compSize[comp[i]!]! > 1 || selfLoop.has(i);
-
-  // Condensation edges in the *dependents* direction: if `from` imports `to`,
-  // then comp(to) has comp(from) as a dependent. Dedup per source component.
-  const depAdj: Set<number>[] = Array.from({ length: compCount }, () => new Set<number>());
-  for (let a = 0; a < n; a++) {
-    for (const b of children[a]!) {
-      const cf = comp[a]!;
-      const ct = comp[b]!;
-      if (cf !== ct) {
-        depAdj[ct]!.add(cf);
+    const c = structural.comp[i]!;
+    if (structural.compSize[c]! > 1) {
+      const members = cycleMembers.get(c);
+      if (members) {
+        members.push(nodes[i]!.id);
+      } else {
+        cycleMembers.set(c, [nodes[i]!.id]);
       }
     }
   }
-
-  // Transitive dependent LoC per component via bitset reach over the
-  // condensation DAG, accumulated in reverse-topological (post) order so a
-  // component's successors are resolved before it.
-  const words = (compCount + 31) >>> 5;
-  const reach: Uint32Array[] = Array.from({ length: compCount }, () => new Uint32Array(words));
-  for (const c of postOrder(depAdj, compCount)) {
-    const acc = reach[c]!;
-    for (const s of depAdj[c]!) {
-      acc[s >>> 5]! |= 1 << (s & 31);
-      const sReach = reach[s]!;
-      for (let w = 0; w < words; w++) {
-        acc[w]! |= sReach[w]!;
-      }
-    }
-  }
-
-  const depLocOfComp = new Float64Array(compCount);
-  for (let c = 0; c < compCount; c++) {
-    const bits = reach[c]!;
-    for (let w = 0; w < words; w++) {
-      let bit = bits[w]!;
-      while (bit !== 0) {
-        depLocOfComp[c]! += compLoc[(w << 5) + trailingZeros(bit)]!;
-        bit &= bit - 1;
-      }
-    }
-  }
+  const cycles = [...cycleMembers.entries()]
+    .sort((a, b) => structural.compLoc[b[0]]! - structural.compLoc[a[0]]!)
+    .slice(0, MAX_CYCLES)
+    .map(([, members]) => members.sort());
 
   // Assemble per-file cost and the overhead decomposition.
   let costLoc = 0;
@@ -195,25 +196,28 @@ export function scoreMaintainability(graph: Graph): Maintainability {
 
   for (let i = 0; i < n; i++) {
     const li = loc(i);
-    const c = comp[i]!;
+    const c = structural.comp[i]!;
     const ce = children[i]!.length;
     const ca = parents[i]!.length;
-    // Volatility-weighted fan-out: each import counts by its target's base
-    // instability, so importing stable foundations is nearly free and only
-    // importing volatile modules drives comprehension and instability up.
+    // Volatility-weighted fan-out: each SYNCHRONOUS value import counts by its
+    // target's base instability, so importing stable foundations is nearly
+    // free and only importing volatile modules drives comprehension and
+    // instability up. Lazy registry edges charge no comprehension (§2).
     let ceW = 0;
-    for (const d of children[i]!) {
+    for (const d of syncChildren[i]!) {
       ceW += i0[d]!;
     }
     const instability = ceW + ca === 0 ? 0 : ceW / (ceW + ca);
 
     // Dependents of i: everything reaching its component, plus the *other*
     // members of its own cycle (mutual dependents), minus i itself.
-    const blastRadius = (depLocOfComp[c]! + (compLoc[c]! - li)) / totalLoc;
+    const blastRadius = (structural.depLocOfComp[c]! + (structural.compLoc[c]! - li)) / totalLoc;
+    const ct = typeRisk.comp[i]!;
+    const typeRadius = (typeRisk.depLocOfComp[ct]! + (typeRisk.compLoc[ct]! - li)) / totalLoc;
 
     const comprehend = ALPHA * Math.max(0, ceW - HEALTHY_FANOUT);
     const blast = BETA * instability * blastRadius;
-    const types = isRed(i) ? GAMMA * (1 + DELTA * blastRadius) : 0;
+    const types = isRed(i) ? GAMMA * (1 + DELTA * typeRadius) : 0;
     const flaws = comprehend + blast + types;
     // Complexity is a flaw *amplifier*, never a standalone penalty: a dense,
     // branch-heavy file makes each structural/type flaw costlier to change
@@ -313,6 +317,7 @@ export function scoreMaintainability(graph: Graph): Maintainability {
     hotspots: hotspots.slice(0, MAX_HOTSPOTS),
     contributions,
     breakdown,
+    cycles,
   };
 }
 
@@ -328,6 +333,83 @@ function typedFraction(nodes: Graph["nodes"], totalLoc: number): number {
     }
   }
   return green / totalLoc;
+}
+
+/** Condensation-based transitive-dependent reach for one edge projection. */
+interface DependentReach {
+  /** Node → SCC id (Tarjan). */
+  comp: Int32Array;
+  /** SCC → summed member LoC. */
+  compLoc: Float64Array;
+  /** SCC → member count (>1 = a real cycle). */
+  compSize: Int32Array;
+  /** SCC → total LoC of every component that transitively imports it. */
+  depLocOfComp: Float64Array;
+}
+
+/**
+ * Transitive dependent LoC per component: SCC-condense `children`, then
+ * accumulate dependent-direction reachability with bitsets in
+ * reverse-topological order. Runs once per edge projection (§2) — structural
+ * blast and type risk read different projections of the same graph.
+ */
+function dependentReach(
+  children: number[][],
+  n: number,
+  loc: (i: number) => number,
+): DependentReach {
+  const { comp, compCount } = stronglyConnected(children, n);
+
+  const compLoc = new Float64Array(compCount);
+  const compSize = new Int32Array(compCount);
+  for (let i = 0; i < n; i++) {
+    const c = comp[i]!;
+    compLoc[c]! += loc(i);
+    compSize[c]! += 1;
+  }
+
+  // Condensation edges in the *dependents* direction: if `from` imports `to`,
+  // then comp(to) has comp(from) as a dependent. Dedup per source component.
+  const depAdj: Set<number>[] = Array.from({ length: compCount }, () => new Set<number>());
+  for (let a = 0; a < n; a++) {
+    for (const b of children[a]!) {
+      const cf = comp[a]!;
+      const ct = comp[b]!;
+      if (cf !== ct) {
+        depAdj[ct]!.add(cf);
+      }
+    }
+  }
+
+  // Transitive dependent LoC per component via bitset reach over the
+  // condensation DAG, accumulated in reverse-topological (post) order so a
+  // component's successors are resolved before it.
+  const words = (compCount + 31) >>> 5;
+  const reach: Uint32Array[] = Array.from({ length: compCount }, () => new Uint32Array(words));
+  for (const c of postOrder(depAdj, compCount)) {
+    const acc = reach[c]!;
+    for (const s of depAdj[c]!) {
+      acc[s >>> 5]! |= 1 << (s & 31);
+      const sReach = reach[s]!;
+      for (let w = 0; w < words; w++) {
+        acc[w]! |= sReach[w]!;
+      }
+    }
+  }
+
+  const depLocOfComp = new Float64Array(compCount);
+  for (let c = 0; c < compCount; c++) {
+    const bits = reach[c]!;
+    for (let w = 0; w < words; w++) {
+      let bit = bits[w]!;
+      while (bit !== 0) {
+        depLocOfComp[c]! += compLoc[(w << 5) + trailingZeros(bit)]!;
+        bit &= bit - 1;
+      }
+    }
+  }
+
+  return { comp, compLoc, compSize, depLocOfComp };
 }
 
 /**

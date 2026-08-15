@@ -22,6 +22,24 @@ export interface FileFacts {
   errors: ComponentNode["errors"];
 }
 
+/** Wire caps for merged edge provenance (mirror `dependencies.ts`). */
+const EDGE_SYMBOL_CAP = 24;
+const EDGE_VIA_CAP = 4;
+
+/** Union `extra` into `base` preserving order, deduped, capped at `cap`. */
+function unionCapped(base: string[] | undefined, extra: readonly string[], cap: number): string[] {
+  const out = base ?? [];
+  for (const s of extra) {
+    if (out.length >= cap) {
+      break;
+    }
+    if (!out.includes(s)) {
+      out.push(s);
+    }
+  }
+  return out;
+}
+
 /**
  * Longest import path from each node down to a leaf, memoized and cycle-safe.
  * Leaves → 0; a back-edge (mutual import) contributes 0 so cycles terminate.
@@ -110,8 +128,9 @@ export function makeGraph(
     parents.set(id, new Set());
   }
   // Induced edges: keep only those with both endpoints in the set, deduped by
-  // (from,to). An edge stays type-only only if every occurrence of it is — a
-  // single value import downgrades it.
+  // (from,to). Flags stay only when every occurrence carries them — a single
+  // value occurrence clears `type`, a single synchronous one clears `lazy` —
+  // and provenance (`symbols`/`via`) unions across occurrences (capped).
   const induced: ComponentEdge[] = [];
   const indexOf = new Map<string, number>();
   for (const e of edges) {
@@ -124,9 +143,34 @@ export function makeGraph(
     const at = indexOf.get(key);
     if (at === undefined) {
       indexOf.set(key, induced.length);
-      induced.push(e.type ? { from: e.from, to: e.to, type: true } : { from: e.from, to: e.to });
-    } else if (!e.type && induced[at].type) {
-      induced[at] = { from: e.from, to: e.to };
+      const copy: ComponentEdge = { from: e.from, to: e.to };
+      if (e.type) {
+        copy.type = true;
+      }
+      if (e.lazy) {
+        copy.lazy = true;
+      }
+      if (e.symbols?.length) {
+        copy.symbols = [...e.symbols];
+      }
+      if (e.via?.length) {
+        copy.via = [...e.via];
+      }
+      induced.push(copy);
+    } else {
+      const merged = induced[at];
+      if (!e.type && merged.type) {
+        delete merged.type;
+      }
+      if (!e.lazy && merged.lazy) {
+        delete merged.lazy;
+      }
+      if (e.symbols?.length) {
+        merged.symbols = unionCapped(merged.symbols, e.symbols, EDGE_SYMBOL_CAP);
+      }
+      if (e.via?.length) {
+        merged.via = unionCapped(merged.via, e.via, EDGE_VIA_CAP);
+      }
     }
   }
 

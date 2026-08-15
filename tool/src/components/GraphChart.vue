@@ -8,6 +8,7 @@ import type {
 } from "../../../src/shared/types.ts";
 import {
   type Controls,
+  type CycleInfo,
   type GraphController,
   type NodeDetail,
   type Readouts,
@@ -21,6 +22,10 @@ import {
  */
 const props = defineProps<{
   graph: Graph;
+  /** The FULL module graph the score ran on — breakdown context in any view. */
+  fullGraph: Graph | null;
+  /** Shipped import cycles, preprocessed for display/isolation. */
+  cycles: CycleInfo[] | null;
   controls: Controls;
   driver: MaintainabilityDriver | null;
   contributions: MaintainabilityContributions | null;
@@ -48,6 +53,7 @@ onMounted(() => {
   // Controls first so the initial paint honours the live colour mode / filters.
   controller.setControls(props.controls);
   controller.setGraph(props.graph);
+  controller.setFullGraph(props.fullGraph, props.cycles);
   controller.setDriverHighlight(props.driver, props.contributions);
   controller.setBreakdown(props.breakdown);
 });
@@ -56,6 +62,10 @@ onMounted(() => {
 watch(
   () => props.graph,
   (g) => controller?.setGraph(g),
+);
+watch(
+  () => [props.fullGraph, props.cycles],
+  () => controller?.setFullGraph(props.fullGraph, props.cycles),
 );
 watch(
   () => props.controls,
@@ -77,6 +87,7 @@ onUnmounted(() => controller?.destroy());
 defineExpose({
   toggleDepth: (height: number) => controller?.toggleDepth(height),
   focusDependents: (id: string) => controller?.focusDependents(id),
+  focusSet: (ids: string[]) => controller?.focusSet(ids),
 });
 </script>
 

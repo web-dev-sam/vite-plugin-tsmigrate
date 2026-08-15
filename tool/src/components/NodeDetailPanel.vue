@@ -102,7 +102,9 @@ const INSTABILITY_HELP =
             </span>
             <span class="shrink-0 font-semibold tabular-nums">
               <template v-if="d.share !== null">{{ d.share }}%</template>
-              <template v-else>×{{ d.multiplier?.toFixed(2) }}</template>
+              <template v-else-if="d.multiplier !== undefined"
+                >×{{ d.multiplier.toFixed(2) }}</template
+              >
             </span>
           </div>
           <p class="mt-0.5 text-xs text-muted">
@@ -111,17 +113,19 @@ const INSTABILITY_HELP =
               ·
               <Tooltip as="span" :content="INSTABILITY_HELP">
                 <span class="underline decoration-dotted underline-offset-2">instability</span>
-                <span :class="instabilityTone(d.instability)">&nbsp;{{
-                  d.instability.toFixed(2)
-                }}</span>
+                <span :class="instabilityTone(d.instability)"
+                  >&nbsp;{{ d.instability.toFixed(2) }}</span
+                >
               </Tooltip>
             </template>
           </p>
+          <p v-if="d.action" class="mt-0.5 text-xs text-accent">→ {{ d.action }}</p>
           <ul v-if="d.items.length" class="mt-1 space-y-0.5">
             <li
               v-for="(item, i) in d.items"
               :key="i"
               class="flex items-center justify-between gap-2 pl-3 text-xs"
+              :title="item.why"
             >
               <span class="truncate">{{ item.name }}</span>
               <span class="shrink-0 text-muted tabular-nums">{{ item.tail }}</span>

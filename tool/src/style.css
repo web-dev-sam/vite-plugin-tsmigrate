@@ -53,18 +53,29 @@
   stroke: #21262d;
 }
 
+/*
+ * Edge base opacity/width are per-element SVG attributes set by renderLinks()
+ * (volatility-weighted; see render.ts) — they must NOT live here, because CSS
+ * class rules override presentation attributes. `.hl`/`.dim` below win over
+ * the attributes for exactly that reason; `.hl` keeps a per-edge weight via
+ * the `--hlo` custom property (floored so trace mode stays usable).
+ */
 .link {
   stroke: #30363d;
-  stroke-opacity: 0.5;
 }
 
 .link.type {
   stroke-dasharray: 4 3;
 }
 
+/* Lazy (dynamic import / glob) edges: distinct dash from type-only. */
+.link.lazy {
+  stroke-dasharray: 1.5 3;
+}
+
 .link.hl {
   stroke: #58a6ff;
-  stroke-opacity: 0.95;
+  stroke-opacity: var(--hlo, 0.95);
 }
 
 .node {
@@ -104,6 +115,24 @@
 }
 
 .rlabel.dim {
+  opacity: 0.12;
+}
+
+.flabel {
+  fill: #c9d1d9;
+  /* User-space size: scales with zoom (small when zoomed out, readable zoomed
+     in). Drawn behind the nodes so the graph stays legible. */
+  font-size: 5px;
+  font-weight: 600;
+  paint-order: stroke;
+  stroke: #05080d;
+  stroke-width: 0.18em;
+  pointer-events: none;
+  user-select: none;
+  font-family: ui-monospace, monospace;
+}
+
+.flabel.dim {
   opacity: 0.12;
 }
 

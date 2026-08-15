@@ -1,5 +1,5 @@
 {
-  "name": "tsmigrate-playground-shadcn",
+  "name": "playground-shadcn",
   "private": true,
   "type": "module",
   "dependencies": {

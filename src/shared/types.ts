@@ -49,8 +49,10 @@ export interface ComponentNode {
 /**
  * Importer → imported relation. In the `vue` graph, non-component modules
  * (barrels, composables) are collapsed: `A.vue → utils/index.ts → B.vue`
- * yields the edge `A → B`. In the `full` graph, edges are the raw module
- * imports with no collapsing.
+ * yields the edge `A → B`. In the `full` graph, edges are symbol-resolved
+ * definition edges: value/type imports point at the modules that *define* the
+ * imported symbols (barrels are transparent), whole-module dependencies
+ * (side-effect, namespace, dynamic import) at the module itself.
  */
 export interface ComponentEdge {
   from: string;
@@ -61,6 +63,23 @@ export interface ComponentEdge {
    * dependency. Omitted for value edges. Rendered dashed in the tool.
    */
   type?: boolean;
+  /**
+   * True when this edge exists *only* across lazy boundaries (`import(...)`,
+   * `import.meta.glob`) — a declarative registry hop, not comprehension load.
+   * Omitted for edges with any synchronous occurrence. `full` graph only.
+   */
+  lazy?: boolean;
+  /**
+   * Origin symbol names crossing this edge (capped; absent for whole-module
+   * edges). `full` graph only — the `vue` graph keeps its exact legacy shape.
+   */
+  symbols?: string[];
+  /**
+   * Re-export/barrel hops the resolution passed through (first hop today —
+   * the import statement's direct target — so a narrowed edge stays greppable
+   * in `from`'s source). `full` graph only.
+   */
+  via?: string[];
 }
 
 /** A self-consistent induced graph: heights/edges/maxHeight all relative to `nodes`. */
@@ -81,15 +100,15 @@ export interface MaintainabilityHotspot {
   loc: number;
   /** Cyclomatic complexity (decision points) — amplifies this file's flaw cost. */
   cc: number;
-  /** Direct imports (efferent coupling, Ce). */
+  /** Direct value imports (efferent coupling, Ce) — type-only edges excluded. */
   fanOut: number;
-  /** Direct importers (afferent coupling, Ca). */
+  /** Direct value importers (afferent coupling, Ca) — type-only edges excluded. */
   fanIn: number;
   /** Volatility-weighted instability `Ceʷ / (Ceʷ + Ca)` ∈ [0,1] — a change-likelihood proxy where stable imports count for less. */
   instability: number;
   /** Blast radius — fraction of the codebase's LoC that transitively imports this file. */
   blastRadius: number;
-  /** True when this file sits in an import cycle (a non-trivial SCC). */
+  /** True when this file sits in a structural import cycle (a non-trivial SCC over value edges). */
   inCycle: boolean;
   /** This file's modelled change-cost, in LoC-equivalent units. */
   cost: number;
@@ -170,6 +189,13 @@ export interface Maintainability {
   contributions: MaintainabilityContributions;
   /** Per-node change-cost breakdown for the alt-hover detail view (files at their floor omitted). */
   breakdown: Record<string, MaintainabilityBreakdown>;
+  /**
+   * Members of the largest import cycles (structural SCCs, biggest LoC
+   * first, capped) — the actionable list behind `cycleLoc`/`inCycle`. Cycles
+   * held together only by `import type` edges do not appear: they are legal
+   * TS and carry no runtime hazard.
+   */
+  cycles: string[][];
 }
 
 export interface ComponentGraph {
@@ -180,10 +206,18 @@ export interface ComponentGraph {
   root: string;
   /** `.vue` components only, with barrel-collapsed edges. */
   vue: Graph;
-  /** Reachable `.vue` + `.ts` modules, with raw import edges. */
+  /** Reachable `.vue` + `.ts` modules, with symbol-resolved definition edges. */
   full: Graph;
   /** Modelled maintainability of the `full` module graph. */
   maintainability: Maintainability;
+  /**
+   * Generated auto-import manifests detected during the crawl (Nuxt /
+   * `unplugin-vue-components` / `unplugin-auto-import`): components and
+   * composables bound with no import statement. Their edges are invisible to
+   * the graph, so coupling and blast radius are UNDER-reported — the tool
+   * shows a warning banner when non-empty. Absolute paths.
+   */
+  autoImportManifests: string[];
 }
 
 /** Cheap answer to `GET /api/graph?since=<version>` when nothing changed. */
@@ -198,6 +232,8 @@ export type GraphResponse = ComponentGraph | GraphUnchanged;
 export interface Diagnostics {
   appUrl: string | null;
   root: string;
+  /** Display name of the analyzed project (its package.json `name`, else the root dir basename). */
+  projectName: string;
   /** Vue version resolved from the user's app, or `null` when not found. */
   vueVersion: string | null;
   /** `.vue` module ids currently in the dev server's module graph. */

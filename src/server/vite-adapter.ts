@@ -58,7 +58,10 @@ export function createAnalysisHost(server: ViteDevServer): AnalysisHost {
       };
       await run(relative_, fromDir);
       await run(rooted, root);
-      return [...out];
+      // Deterministic order: tinyglobby's concurrent traversal returns hits in
+      // run-varying order, which would jitter BFS discovery (and thus edge
+      // order) across otherwise identical crawls.
+      return [...out].sort();
     },
     async readFile(path) {
       try {

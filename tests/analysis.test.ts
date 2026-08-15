@@ -8,9 +8,9 @@ import { crawlGraph, findEntries } from "../src/analysis/graph.ts";
 import type { AnalysisHost } from "../src/analysis/host.ts";
 import { scoreMaintainability } from "../src/analysis/maintainability.ts";
 import { computeHeights, type FileFacts, groupOf, makeGraph } from "../src/analysis/topology.ts";
-import type { Graph } from "../src/shared/types.ts";
+import type { Graph, Maintainability } from "../src/shared/types.ts";
 import { parseTscErrors } from "../src/analysis/typecheck.ts";
-import { cyclomaticComplexity } from "../src/analysis/imports.ts";
+import { cyclomaticComplexity, parseModule } from "../src/analysis/imports.ts";
 
 const ROOT = "/app";
 
@@ -83,7 +83,7 @@ test("finds the entry from index.html", async () => {
 });
 
 test("crawls components and collapses barrels into direct edges", async () => {
-  const { nodes, edges } = await crawlGraph(fakeHost(), ["/app/src/main.ts"]);
+  const { nodes, componentEdges: edges } = await crawlGraph(fakeHost(), ["/app/src/main.ts"]);
   expect(nodes).toEqual([
     "/app/src/App.vue",
     "/app/src/components/Child.vue",
@@ -114,18 +114,34 @@ test("type-only imports produce dashed (type) edges; value/mixed do not", async 
     "/app/src/Typ.vue": "<template><p>t</p></template>\n",
     "/app/src/Mix.vue": "<template><p>m</p></template>\n",
   };
-  const { edges, rawEdges } = await crawlGraph(fakeHost(undefined, files), ["/app/src/main.ts"]);
+  const { componentEdges, moduleEdges } = await crawlGraph(fakeHost(undefined, files), [
+    "/app/src/main.ts",
+  ]);
 
   // Only the `import type` edge carries `type: true` (rendered dashed).
-  expect(edges).toContainEqual({ from: "/app/src/App.vue", to: "/app/src/Typ.vue", type: true });
-  expect(edges).toContainEqual({ from: "/app/src/App.vue", to: "/app/src/Val.vue" });
-  expect(edges).toContainEqual({ from: "/app/src/App.vue", to: "/app/src/Mix.vue" });
+  expect(componentEdges).toContainEqual({
+    from: "/app/src/App.vue",
+    to: "/app/src/Typ.vue",
+    type: true,
+  });
+  expect(componentEdges).toContainEqual({ from: "/app/src/App.vue", to: "/app/src/Val.vue" });
+  expect(componentEdges).toContainEqual({ from: "/app/src/App.vue", to: "/app/src/Mix.vue" });
   // The type edge is not a plain value edge — the flag must be present.
-  expect(edges).not.toContainEqual({ from: "/app/src/App.vue", to: "/app/src/Typ.vue" });
+  expect(componentEdges).not.toContainEqual({ from: "/app/src/App.vue", to: "/app/src/Typ.vue" });
 
-  // Same classification in the raw full-module graph; a value import is solid.
-  expect(rawEdges).toContainEqual({ from: "/app/src/App.vue", to: "/app/src/Typ.vue", type: true });
-  expect(rawEdges).toContainEqual({ from: "/app/src/main.ts", to: "/app/src/App.vue" });
+  // Same classification in the symbol-resolved full-module graph, which also
+  // carries the crossing symbol names as provenance.
+  expect(moduleEdges).toContainEqual({
+    from: "/app/src/App.vue",
+    to: "/app/src/Typ.vue",
+    type: true,
+    symbols: ["P"],
+  });
+  expect(moduleEdges).toContainEqual({
+    from: "/app/src/main.ts",
+    to: "/app/src/App.vue",
+    symbols: ["App"],
+  });
 });
 
 // Vue 2 support: options-API SFCs use a plain `<script>` (no `setup`) and a
@@ -173,7 +189,7 @@ test("crawls Vue 2 options-API SFCs and a .js entry", async () => {
 
   const entries = await findEntries(host);
   expect(entries).toEqual(["/v2/src/main.js"]);
-  const { nodes, edges } = await crawlGraph(host, entries);
+  const { nodes, componentEdges: edges } = await crawlGraph(host, entries);
   expect(nodes).toContain("/v2/src/App.vue");
   expect(nodes).toContain("/v2/src/components/Widget.vue");
   expect(edges).toContainEqual({
@@ -353,7 +369,7 @@ test("a hub module does not spill its internal imports onto consumers", async ()
     },
   };
 
-  const { nodes, edges } = await crawlGraph(host, ["/h/src/main.ts"]);
+  const { nodes, componentEdges: edges } = await crawlGraph(host, ["/h/src/main.ts"]);
   // The views are still discovered as nodes (via routes.ts) — not lost.
   expect(nodes).toContain("/h/src/AuthSuite.vue");
   expect(nodes).toContain("/h/src/views/Login.vue");
@@ -361,6 +377,328 @@ test("a hub module does not spill its internal imports onto consumers", async ()
   expect(nodes).toContain("/h/src/views/Reset.vue");
   // AuthSuite imported only a route-name value → zero spurious component edges.
   expect(edges.filter((e) => e.from === "/h/src/AuthSuite.vue")).toEqual([]);
+});
+
+// --- symbol-resolved module edges (docs/symbol-resolution.md) ------------------
+
+// A minimal fake host over an in-memory file map rooted at `/s`, with the same
+// relative-specifier resolution the crawl tests above use.
+function symbolHost(files: Record<string, string>): AnalysisHost {
+  return {
+    root: "/s",
+    configuredEntries: () => [],
+    glob: async () => [],
+    async resolve(spec, importer) {
+      if (!spec.startsWith(".")) {
+        return null; // bare specifier — external (node_modules)
+      }
+      const base = join(dirname(importer), spec);
+      for (const candidate of [base, `${base}.ts`, `${base}.vue`, join(base, "index.ts")]) {
+        if (candidate in files) {
+          return candidate;
+        }
+      }
+      return null;
+    },
+    async readFile(path) {
+      return files[path] ?? null;
+    },
+    async runGit() {
+      return "";
+    },
+    async exec() {
+      return { stdout: "", stderr: "", code: 0 };
+    },
+  };
+}
+
+test("module edges point at definers through barrels, with via + symbols", async () => {
+  const { moduleEdges } = await crawlGraph(
+    symbolHost({
+      "/s/main.ts": 'import { helper } from "./barrel";\n',
+      "/s/barrel.ts": 'export { helper } from "./lib/helper";\nexport * from "./lib/star";\n',
+      "/s/lib/helper.ts": "export const helper = 1;\n",
+      "/s/lib/star.ts": "export const starred = 2;\n",
+    }),
+    ["/s/main.ts"],
+  );
+  // Consumer → definer, barrel transparent, first hop recorded.
+  expect(moduleEdges).toContainEqual({
+    from: "/s/main.ts",
+    to: "/s/lib/helper.ts",
+    symbols: ["helper"],
+    via: ["/s/barrel.ts"],
+  });
+  // The barrel value-depends on the definers it re-exports…
+  expect(moduleEdges).toContainEqual({
+    from: "/s/barrel.ts",
+    to: "/s/lib/helper.ts",
+    symbols: ["helper"],
+  });
+  // …and `export *` is a single value edge to its direct target (no expansion).
+  expect(moduleEdges).toContainEqual({ from: "/s/barrel.ts", to: "/s/lib/star.ts" });
+  // No raw main → barrel hop survives narrowing.
+  expect(moduleEdges.filter((e) => e.from === "/s/main.ts")).toHaveLength(1);
+});
+
+test("whole-module reasons emit ONE edge to the module itself, never an expansion", async () => {
+  const files = {
+    "/s/main.ts":
+      'import * as ns from "./barrel";\nimport "./barrel";\nconst p = import("./barrel");\nexport const use = ns;\n',
+    "/s/barrel.ts":
+      'export { default as A } from "./A.vue";\nexport { default as B } from "./B.vue";\n',
+    "/s/A.vue": "<template><p>a</p></template>\n",
+    "/s/B.vue": "<template><p>b</p></template>\n",
+  };
+  const { moduleEdges } = await crawlGraph(symbolHost(files), ["/s/main.ts"]);
+  // Namespace + side-effect + dynamic import of the same barrel: exactly one
+  // edge main → barrel; blast stays over-approximated through the barrel's own
+  // edges, but no direct fan-out to A/B is fabricated.
+  const fromMain = moduleEdges.filter((e) => e.from === "/s/main.ts");
+  expect(fromMain).toEqual([{ from: "/s/main.ts", to: "/s/barrel.ts" }]);
+  expect(moduleEdges).toContainEqual({
+    from: "/s/barrel.ts",
+    to: "/s/A.vue",
+    symbols: ["A"],
+  });
+});
+
+test("empty resolutions fall back to a whole-module edge — never dropped", async () => {
+  const { moduleEdges } = await crawlGraph(
+    symbolHost({
+      // Re-export chain that leaves the project: externals resolve to null.
+      "/s/main.ts":
+        'import { useQuery } from "./barrel";\nimport { broken } from "./broken";\nimport { missing } from "./lib";\nimport "./setup";\nexport const all = [useQuery, broken, missing];\n',
+      "/s/barrel.ts": 'export { useQuery } from "@tanstack/vue-query";\n',
+      // Unparseable module: contributes no static record, edge must survive.
+      "/s/broken.ts": "export const broken = ;;; syntax error {{{\n",
+      // The name simply isn't there.
+      "/s/lib.ts": "export const other = 1;\n",
+      // Side-effect import of an export-less module.
+      "/s/setup.ts": "globalThis.x = 1;\n",
+    }),
+    ["/s/main.ts"],
+  );
+  const fromMain = moduleEdges.filter((e) => e.from === "/s/main.ts").map((e) => e.to);
+  expect(fromMain).toContain("/s/barrel.ts");
+  expect(fromMain).toContain("/s/broken.ts");
+  expect(fromMain).toContain("/s/lib.ts");
+  expect(fromMain).toContain("/s/setup.ts");
+});
+
+test("export * never forwards default", async () => {
+  const files = {
+    "/s/main.ts": 'import Widget from "./facade";\nexport const w = Widget;\n',
+    "/s/facade.ts": 'export * from "./Widget.vue";\n',
+    "/s/Widget.vue": "<template><p>w</p></template>\n",
+  };
+  const { componentEdges, moduleEdges } = await crawlGraph(symbolHost(files), ["/s/main.ts"]);
+  // ESM: `export *` forwards only NAMED exports. The default must not resolve
+  // through the star in either view; the module view falls back to the direct
+  // target (the import still executes the facade), the component view drops it.
+  expect(moduleEdges.filter((e) => e.from === "/s/main.ts")).toEqual([
+    { from: "/s/main.ts", to: "/s/facade.ts" },
+  ]);
+  expect(componentEdges).toEqual([]);
+});
+
+test("mutual export-* cycles resolve identically regardless of query order", async () => {
+  const files = {
+    // c1 (queried first, sorted order) resolves `x` from b; c2 from a. In the
+    // old resolver the b-first query CACHED a truncated ∅ for (a, x) — computed
+    // while b was still on the resolution stack — so c2's query returned ∅.
+    "/s/a.ts": 'export * from "./b";\n',
+    "/s/b.ts": 'export * from "./a";\nexport * from "./def";\n',
+    "/s/c1.ts": 'import { x } from "./b";\nexport const useB = x;\n',
+    "/s/c2.ts": 'import { x } from "./a";\nexport const useA = x;\n',
+    "/s/def.ts": "export const x = 1;\n",
+    "/s/main.ts": 'import "./c1";\nimport "./c2";\n',
+  };
+  const { moduleEdges } = await crawlGraph(symbolHost(files), ["/s/main.ts"]);
+  expect(moduleEdges).toContainEqual({
+    from: "/s/c1.ts",
+    to: "/s/def.ts",
+    symbols: ["x"],
+    via: ["/s/b.ts"],
+  });
+  expect(moduleEdges).toContainEqual({
+    from: "/s/c2.ts",
+    to: "/s/def.ts",
+    symbols: ["x"],
+    via: ["/s/a.ts"],
+  });
+});
+
+test("per-binding type precision: mixed imports split into type and value edges", async () => {
+  const { moduleEdges } = await crawlGraph(
+    symbolHost({
+      "/s/main.ts": 'import { type A, B } from "./m";\nexport const b = B;\n',
+      "/s/m.ts": 'export type { A } from "./a";\nexport { B } from "./b";\n',
+      "/s/a.ts": "export type A = number;\n",
+      "/s/b.ts": "export const B = 1;\n",
+    }),
+    ["/s/main.ts"],
+  );
+  expect(moduleEdges).toContainEqual({
+    from: "/s/main.ts",
+    to: "/s/a.ts",
+    type: true,
+    symbols: ["A"],
+    via: ["/s/m.ts"],
+  });
+  expect(moduleEdges).toContainEqual({
+    from: "/s/main.ts",
+    to: "/s/b.ts",
+    symbols: ["B"],
+    via: ["/s/m.ts"],
+  });
+});
+
+test("lazy boundaries are flagged; any synchronous occurrence clears the flag", async () => {
+  const files = {
+    "/s/main.ts": 'const a = import("./page");\nconst b = import("./both");\nimport "./both";\n',
+    "/s/page.ts": "export const page = 1;\n",
+    "/s/both.ts": "export const both = 1;\n",
+  };
+  const { moduleEdges } = await crawlGraph(symbolHost(files), ["/s/main.ts"]);
+  expect(moduleEdges).toContainEqual({ from: "/s/main.ts", to: "/s/page.ts", lazy: true });
+  expect(moduleEdges).toContainEqual({ from: "/s/main.ts", to: "/s/both.ts" });
+});
+
+test("strictRed no longer reddens consumers through barrels they use for unrelated symbols", async () => {
+  const files = {
+    "/s/main.ts": 'import { good } from "./barrel";\nexport const g = good;\n',
+    "/s/barrel.ts": 'export { good } from "./good";\nexport { bad } from "./bad";\n',
+    "/s/good.ts": "export const good = 1;\n",
+    "/s/bad.ts": "export const bad: string = 1;\n",
+  };
+  const { moduleEdges, files: crawled } = await crawlGraph(symbolHost(files), ["/s/main.ts"]);
+  const ids = new Set(crawled.map((f) => f.id));
+  const facts = new Map(
+    [...ids].map((id) => [
+      id,
+      {
+        kind: "ts" as const,
+        loc: 10,
+        cc: 0,
+        blame: null,
+        typeErrors: id === "/s/bad.ts" ? 1 : 0,
+        status: { loc: "ready", cc: "ready", blame: "ready", typecheck: "ready" } as const,
+        errors: {},
+      },
+    ]),
+  );
+  const graph = makeGraph(ids, moduleEdges, facts, "/s");
+  const red = new Set(graph.nodes.filter((n) => n.strictRed).map((n) => n.id));
+  // The barrel re-exports the red module → red. The consumer only uses `good`
+  // → NOT red (on raw file edges it was, through the barrel).
+  expect(red.has("/s/bad.ts")).toBe(true);
+  expect(red.has("/s/barrel.ts")).toBe(true);
+  expect(red.has("/s/main.ts")).toBe(false);
+});
+
+test("auto-import manifests are detected only when their app was crawled", async () => {
+  const host = symbolHost({
+    "/s/app/main.ts": "export const x = 1;\n",
+  });
+  host.glob = async (patterns) =>
+    patterns.some((p) => p.includes("components.d.ts"))
+      ? ["/s/app/components.d.ts", "/s/other/components.d.ts"]
+      : [];
+  const { autoImportManifests } = await crawlGraph(host, ["/s/app/main.ts"]);
+  // The sibling app's manifest is irrelevant — nothing crawled lives beside it.
+  expect(autoImportManifests).toEqual(["/s/app/components.d.ts"]);
+});
+
+// --- Phase 5: namespace precision (docs/symbol-resolution.md §5) ---------------
+
+test("namespace usage collection: members, escapes, shadowing, sfc blind spot", () => {
+  // Static member reads — value, optional, string-key, and type positions.
+  const collected = parseModule(
+    'import * as api from "./api";\n' +
+      "api.fetchUser();\n" +
+      'const x = api["getX"];\n' +
+      "const y = api?.maybe;\n" +
+      "type T = api.Foo;\n" +
+      "export const use = [x, y];\n",
+    "/s/a.ts",
+  ).nsUsage;
+  expect(collected).toEqual([
+    {
+      local: "api",
+      source: "./api",
+      members: ["Foo", "fetchUser", "getX", "maybe"],
+      cause: null,
+    },
+  ]);
+
+  // Every escape form falls back to whole-module under `namespaceEscape`.
+  const escapes = [
+    "console.log(api);",
+    "const all = { ...api };",
+    "for (const k in api) { String(k); }",
+    "const dyn = api[key];",
+    "export { api };",
+    "export default api;",
+    "const keys = Object.keys(api);",
+    "type Q = typeof api;",
+  ];
+  for (const use of escapes) {
+    const [usage] = parseModule(
+      `import * as api from "./api";\nconst key = "k";\n${use}\n`,
+      "/s/a.ts",
+    ).nsUsage;
+    expect(usage, use).toEqual({
+      local: "api",
+      source: "./api",
+      members: null,
+      cause: "namespaceEscape",
+    });
+  }
+
+  // A shadowing declaration anywhere in the file declines narrowing.
+  const [shadowed] = parseModule(
+    'import * as api from "./api";\nfunction f(api: number) {\n  return api;\n}\nexport const u = api.fetchUser();\n',
+    "/s/a.ts",
+  ).nsUsage;
+  expect(shadowed.cause).toBe("namespaceShadowed");
+
+  // `.vue` scripts are never narrowed — the template is invisible to the crawl.
+  const [sfc] = parseModule(
+    'import * as api from "./api";\nexport const u = api.fetchUser();\n',
+    "/s/App.vue",
+  ).nsUsage;
+  expect(sfc.cause).toBe("sfcTemplateBlindSpot");
+});
+
+test("namespace imports narrow to used members in the module graph", async () => {
+  const { moduleEdges } = await crawlGraph(
+    symbolHost({
+      "/s/main.ts": 'import * as api from "./api";\nexport const user = api.fetchUser();\n',
+      "/s/api.ts": 'export { fetchUser } from "./fetch";\nexport { postUser } from "./post";\n',
+      "/s/fetch.ts": "export const fetchUser = () => 1;\n",
+      "/s/post.ts": "export const postUser = () => 2;\n",
+    }),
+    ["/s/main.ts"],
+  );
+  // Only the used member's definer gains a consumer edge, through the barrel.
+  expect(moduleEdges.filter((e) => e.from === "/s/main.ts")).toEqual([
+    { from: "/s/main.ts", to: "/s/fetch.ts", symbols: ["fetchUser"], via: ["/s/api.ts"] },
+  ]);
+});
+
+test("escaped namespace usage keeps the whole-module edge", async () => {
+  const { moduleEdges } = await crawlGraph(
+    symbolHost({
+      "/s/main.ts": 'import * as api from "./api";\nexport const all = { ...api };\n',
+      "/s/api.ts": 'export { fetchUser } from "./fetch";\n',
+      "/s/fetch.ts": "export const fetchUser = () => 1;\n",
+    }),
+    ["/s/main.ts"],
+  );
+  expect(moduleEdges.filter((e) => e.from === "/s/main.ts")).toEqual([
+    { from: "/s/main.ts", to: "/s/api.ts" },
+  ]);
 });
 
 test("counts lines of code", async () => {
@@ -428,7 +766,7 @@ test("engine produces a complete two-graph snapshot with all facts", async () =>
   expect(child.height).toBe(0);
   expect(graph.vue.maxHeight).toBe(1);
 
-  // full graph: reachable `.vue` + `.ts`, raw (uncollapsed) edges.
+  // full graph: reachable `.vue` + `.ts`, with symbol-resolved definition edges.
   const fullFiles = graph.full.nodes.map((node) => node.file);
   expect(fullFiles).toContain("src/main.ts");
   expect(fullFiles).toContain("src/shared/index.ts");
@@ -439,10 +777,30 @@ test("engine produces a complete two-graph snapshot with all facts", async () =>
   const shared = graph.full.nodes.find((node) => node.file === "src/shared/index.ts")!;
   const deepFull = graph.full.nodes.find((node) => node.file === "src/components/Deep.vue")!;
   expect(mainNode.kind).toBe("ts");
-  // Raw edges: no collapsing — App → shared → Deep are distinct hops.
-  expect(graph.full.edges).toContainEqual({ from: mainNode.id, to: appFull.id });
-  expect(graph.full.edges).toContainEqual({ from: appFull.id, to: shared.id });
-  expect(graph.full.edges).toContainEqual({ from: shared.id, to: deepFull.id });
+  // Definition edges: value imports point at definers. `main` → App directly;
+  // App's `import { Deep } from "./shared"` narrows THROUGH the barrel to
+  // Deep.vue (first re-export hop recorded in `via`); the barrel keeps its own
+  // edge to the definer it re-exports.
+  expect(graph.full.edges).toContainEqual({
+    from: mainNode.id,
+    to: appFull.id,
+    symbols: ["App"],
+  });
+  expect(graph.full.edges).toContainEqual({
+    from: appFull.id,
+    to: deepFull.id,
+    symbols: ["Deep"],
+    via: [shared.id],
+  });
+  expect(graph.full.edges).toContainEqual({
+    from: shared.id,
+    to: deepFull.id,
+    symbols: ["Deep"],
+  });
+  // The barrel is transparent to its consumers: no raw App → shared hop.
+  expect(graph.full.edges.some((e) => e.from === appFull.id && e.to === shared.id)).toBe(false);
+  // No auto-import manifests in the fixture — and the field always ships.
+  expect(graph.autoImportManifests).toEqual([]);
 
   // Maintainability rides the snapshot, computed over the full graph. The
   // type-check pass is off here, so typeHealth is null (not a fake 100%).
@@ -676,10 +1034,13 @@ function facts(
   }
   return map;
 }
-function graphOf(edges: [string, string][], f: Map<string, FileFacts>): Graph {
+function graphOf(
+  edges: Array<[string, string] | [string, string, { type?: boolean; lazy?: boolean }]>,
+  f: Map<string, FileFacts>,
+): Graph {
   return makeGraph(
     new Set(f.keys()),
-    edges.map(([from, to]) => ({ from, to })),
+    edges.map(([from, to, flags]) => ({ from, to, ...flags })),
     f,
     "/r",
   );
@@ -1105,4 +1466,120 @@ test("maintainability is size-invariant across disjoint identical subgraphs", ()
   }
   const triple = scoreMaintainability(graphOf(tripleEdges, facts(tripleSpec)));
   expect(Math.abs(triple.score - one.score)).toBeLessThanOrEqual(1);
+});
+
+// --- Phase 6: score projections (docs/symbol-resolution.md §2) ------------------
+
+test("lazy route registries charge no comprehension; targets keep fan-in and blast", () => {
+  // A router registering N pages (each volatile: it imports a util that in
+  // turn imports deeper), once via lazy glob edges and once synchronously.
+  const build = (lazy: boolean, pages: number) => {
+    const edges: Array<[string, string, { lazy?: boolean }]> = [];
+    const spec: Record<string, { loc?: number }> = {
+      "/r/router.ts": {},
+      "/r/util.ts": {},
+      "/r/deep.ts": {},
+    };
+    edges.push(["/r/util.ts", "/r/deep.ts", {}]);
+    for (let i = 0; i < pages; i++) {
+      const page = `/r/pages/p${i}.ts`;
+      spec[page] = {};
+      edges.push(["/r/router.ts", page, lazy ? { lazy: true } : {}]);
+      edges.push([page, "/r/util.ts", {}]);
+    }
+    return scoreMaintainability(graphOf(edges, facts(spec)));
+  };
+
+  // 20 pages blow past the healthy fan-out budget when counted synchronously —
+  // the declarative registry pays no comprehension surcharge.
+  const lazyScore = build(true, 20);
+  const syncScore = build(false, 20);
+  expect(lazyScore.breakdown["/r/router.ts"]?.comprehension ?? 0).toBe(0);
+  expect(syncScore.breakdown["/r/router.ts"]!.comprehension).toBeGreaterThan(0);
+  expect(lazyScore.costLoc).toBeLessThan(syncScore.costLoc);
+
+  // …but the pages' fan-in, reachability and blast radius are unchanged — a
+  // broken page still breaks navigation. (Small fixture: every node fits in
+  // the capped hotspot list, which carries the per-node readouts.)
+  const lazySmall = build(true, 6);
+  const syncSmall = build(false, 6);
+  const page = (m: Maintainability) => m.hotspots.find((h) => h.id === "/r/pages/p0.ts")!;
+  const util = (m: Maintainability) => m.hotspots.find((h) => h.id === "/r/util.ts")!;
+  expect(page(lazySmall).fanIn).toBe(page(syncSmall).fanIn);
+  expect(page(lazySmall).blastRadius).toBeCloseTo(page(syncSmall).blastRadius, 10);
+  expect(util(lazySmall).blastRadius).toBeCloseTo(util(syncSmall).blastRadius, 10);
+  expect(util(lazySmall).blastRadius).toBeGreaterThan(0);
+});
+
+test("type-only dependents free the target structurally but still carry type risk", () => {
+  // A red types module with three type-only consumers, vs the same shape with
+  // value consumers. The module imports a volatile dep so its instability is
+  // non-zero when structural fan-in exists.
+  const build = (type: boolean) => {
+    const flags = type ? { type: true } : {};
+    return scoreMaintainability(
+      graphOf(
+        [
+          ["/r/c1.ts", "/r/types.ts", flags],
+          ["/r/c2.ts", "/r/types.ts", flags],
+          ["/r/c3.ts", "/r/types.ts", flags],
+          ["/r/types.ts", "/r/dep.ts", {}],
+          ["/r/dep.ts", "/r/deep.ts", {}],
+        ],
+        facts({
+          "/r/c1.ts": {},
+          "/r/c2.ts": {},
+          "/r/c3.ts": {},
+          "/r/types.ts": { te: 1 },
+          "/r/dep.ts": {},
+          "/r/deep.ts": {},
+        }),
+      ),
+    );
+  };
+  const typed = build(true);
+  const valued = build(false);
+  const hot = (m: Maintainability) => m.hotspots.find((h) => h.id === "/r/types.ts")!;
+
+  // Structural terms: type-only importers leave Ca and the blast radius —
+  // the module is FREER to change, the compiler re-verifies its dependents.
+  expect(hot(typed).fanIn).toBe(0);
+  expect(hot(typed).blastRadius).toBe(0);
+  expect(hot(valued).fanIn).toBe(3);
+  expect(hot(valued).blastRadius).toBeGreaterThan(0);
+  expect(typed.costLoc).toBeLessThan(valued.costLoc);
+
+  // Type risk: a broken type propagates to exactly its type-dependents — the
+  // types term is amplified by the SAME radius in both variants.
+  expect(typed.breakdown["/r/types.ts"]!.types).toBe(valued.breakdown["/r/types.ts"]!.types);
+});
+
+test("cycles lists structural SCC members; type-only backlinks are not cycles", () => {
+  const spec = { "/r/a.ts": {}, "/r/b.ts": {}, "/r/c.ts": {} };
+  const real = scoreMaintainability(
+    graphOf(
+      [
+        ["/r/a.ts", "/r/b.ts"],
+        ["/r/b.ts", "/r/a.ts"],
+        ["/r/c.ts", "/r/a.ts"],
+      ],
+      facts(spec),
+    ),
+  );
+  expect(real.cycles).toEqual([["/r/a.ts", "/r/b.ts"]]);
+  expect(real.cycleLoc).toBeGreaterThan(0);
+
+  // `import type` backlinks are legal TS and carry no runtime hazard.
+  const typeBack = scoreMaintainability(
+    graphOf(
+      [
+        ["/r/a.ts", "/r/b.ts"],
+        ["/r/b.ts", "/r/a.ts", { type: true }],
+        ["/r/c.ts", "/r/a.ts"],
+      ],
+      facts(spec),
+    ),
+  );
+  expect(typeBack.cycles).toEqual([]);
+  expect(typeBack.cycleLoc).toBe(0);
 });

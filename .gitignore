@@ -4,5 +4,8 @@ dist
 *.tgz
 .DS_Store
 
+# Score-capture output (scripts/score.mjs)
+tmp/
+
 # Local-only mid-migration test fixture (see playground-migrating/generate.mjs)
 playground-migrating
