@@ -32,6 +32,19 @@ export interface TsMigrateOptions {
   typeCheckCommand?: string[] | false;
 
   /**
+   * Include type risk in the maintainability score — the `types` driver: a
+   * file with type errors costs extra, amplified by how far its types reach.
+   * Set `false` for a purely structural score: the type-check pass still
+   * runs and drives node coloring and the typed % readout, but type errors
+   * cost nothing. (`typeCheckCommand: false` skips the pass entirely and
+   * zeroes the term too — use this option to keep typing progress visible
+   * while scoring structure only.)
+   *
+   * @default true
+   */
+  scoreTypeRisk?: boolean;
+
+  /**
    * Enable per-file `git blame` analysis (lines of code per author), surfaced
    * in the tool. Runs `git blame` per reachable file on the background queue,
    * so it costs one git process per file and needs real commit history (a
@@ -61,8 +74,9 @@ export function resolveOptions(options: TsMigrateOptions): ResolvedOptions {
     logOnStart = true,
     toolPort = DEFAULT_TOOL_PORT,
     typeCheckCommand = ["vue-tsc", "--noEmit", "--pretty", "false"],
+    scoreTypeRisk = true,
     blame = false,
     blameAliases = {},
   } = options;
-  return { logOnStart, toolPort, typeCheckCommand, blame, blameAliases };
+  return { logOnStart, toolPort, typeCheckCommand, scoreTypeRisk, blame, blameAliases };
 }

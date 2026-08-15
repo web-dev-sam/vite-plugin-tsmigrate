@@ -170,7 +170,10 @@ function startResize(e: PointerEvent) {
     <!-- Top section: settings, scrollable. Flexes to fill the space the detail panel leaves. -->
     <div class="min-h-0 flex-1 overflow-y-auto p-5">
       <header class="mb-4">
-        <h1 class="truncate text-base font-semibold tracking-tight" :title="header.projectName ?? undefined">
+        <h1
+          class="truncate text-base font-semibold tracking-tight"
+          :title="header.projectName ?? undefined"
+        >
           {{ header.projectName ?? "tsmigrate" }}
         </h1>
 

@@ -935,6 +935,35 @@ test("engine flows type errors into typeErrors and strictRed", async () => {
   expect(red).toHaveLength(2); // Child + App
 });
 
+test("engine scoreTypeRisk:false keeps node coloring but scores structure only", async () => {
+  const diagnostics = "src/components/Child.vue(2,7): error TS2322: boom\n";
+  const run = (scoreTypeRisk: boolean) => {
+    const engine = new AnalysisEngine(
+      fakeHost(async () => ({ stdout: diagnostics, stderr: "", code: 1 })),
+      { typeCheckCommand: ["tsc", "--noEmit", "--pretty", "false"], scoreTypeRisk },
+    );
+    return expect
+      .poll(async () => (await engine.getGraph()).complete, { timeout: 2000 })
+      .toBe(true)
+      .then(() => engine.getGraph());
+  };
+  const structural = await run(false);
+
+  // Coloring / typing progress intact: the type pass ran and marked the file.
+  const child = structural.vue.nodes.find((node) => node.file === "src/components/Child.vue")!;
+  expect(child.typeErrors).toBe(1);
+  expect(child.strictRed).toBe(true);
+  expect(structural.maintainability.typeHealth).toBeLessThan(1);
+
+  // Score untouched by the red file: identical to scoring with type risk on
+  // over an all-green codebase — i.e. the default score minus its types term.
+  const scored = await run(true);
+  expect(scored.maintainability.drivers.types).toBeGreaterThan(0);
+  expect(structural.maintainability.drivers.types).toBe(0);
+  expect(structural.maintainability.score).toBeGreaterThanOrEqual(scored.maintainability.score);
+  expect(structural.maintainability.costLoc).toBeLessThan(scored.maintainability.costLoc);
+});
+
 test("engine treats type-check failure as an error status", async () => {
   // No parseable diagnostics + nonzero exit → the pass failed.
   const engine = new AnalysisEngine(
@@ -1444,6 +1473,33 @@ test("maintainability reports typeHealth null when the type pass is off", () => 
   const result = scoreMaintainability(graph);
   expect(result.typeHealth).toBeNull();
   expect(result.drivers.types).toBe(0);
+});
+
+test("scoreTypeRisk:false makes the score purely structural, keeping typed %", () => {
+  // A red foundation everything imports — the worst case for the type term.
+  const edges: Array<[string, string]> = [
+    ["/r/a.ts", "/r/red.ts"],
+    ["/r/b.ts", "/r/red.ts"],
+    ["/r/c.ts", "/r/red.ts"],
+  ];
+  const redFacts = () =>
+    facts({ "/r/red.ts": { te: 5 }, "/r/a.ts": {}, "/r/b.ts": {}, "/r/c.ts": {} });
+  const greenFacts = () => facts({ "/r/red.ts": {}, "/r/a.ts": {}, "/r/b.ts": {}, "/r/c.ts": {} });
+
+  const scored = scoreMaintainability(graphOf(edges, redFacts()));
+  const structural = scoreMaintainability(graphOf(edges, redFacts()), { scoreTypeRisk: false });
+  const green = scoreMaintainability(graphOf(edges, greenFacts()));
+
+  // The red file drags the default score; excluding type risk restores the
+  // structural score exactly — same graph, red files cost nothing.
+  expect(scored.score).toBeLessThan(green.score);
+  expect(structural.score).toBe(green.score);
+  expect(structural.costLoc).toBe(green.costLoc);
+  expect(structural.drivers.types).toBe(0);
+  expect(structural.hotspots).toEqual(green.hotspots);
+  // Typing *progress* still reports — it is information, not a cost.
+  expect(structural.typeHealth).toBeLessThan(1);
+  expect(scored.typeHealth).toBe(structural.typeHealth);
 });
 
 test("maintainability is size-invariant across disjoint identical subgraphs", () => {

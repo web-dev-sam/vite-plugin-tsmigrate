@@ -33,6 +33,7 @@ const TYPECHECK_KEY = "typecheck";
 export class AnalysisEngine {
   private host: AnalysisHost;
   private typeCheckCommand: string[] | false;
+  private scoreTypeRisk: boolean;
   private blame: boolean;
   private blameAliases: Record<string, string>;
   private facts = new FactStore();
@@ -60,6 +61,8 @@ export class AnalysisEngine {
    *   caller (Vite adapter in the plugin, canned fixtures in tests).
    * @param opts.typeCheckCommand argv for the project type-check pass, or
    *   `false` to disable it (every node reported as typed). Default disabled.
+   * @param opts.scoreTypeRisk include type risk in the maintainability score;
+   *   `false` scores structure only (type-check still colors nodes).
    * @param opts.blame enable per-file `git blame` (LoC per author) on the
    *   background queue. Default disabled — no git runs and blame stays empty.
    * @param opts.blameAliases map raw blame author names to canonical display
@@ -69,16 +72,19 @@ export class AnalysisEngine {
     host: AnalysisHost,
     {
       typeCheckCommand = false,
+      scoreTypeRisk = true,
       blame = false,
       blameAliases = {},
     }: {
       typeCheckCommand?: string[] | false;
+      scoreTypeRisk?: boolean;
       blame?: boolean;
       blameAliases?: Record<string, string>;
     } = {},
   ) {
     this.host = host;
     this.typeCheckCommand = typeCheckCommand;
+    this.scoreTypeRisk = scoreTypeRisk;
     this.blame = blame;
     this.blameAliases = blameAliases;
     if (typeCheckCommand === false) {
@@ -154,7 +160,7 @@ export class AnalysisEngine {
       root: this.host.root,
       vue,
       full,
-      maintainability: scoreMaintainability(full),
+      maintainability: scoreMaintainability(full, { scoreTypeRisk: this.scoreTypeRisk }),
       autoImportManifests: this.autoImportManifests,
     };
   }

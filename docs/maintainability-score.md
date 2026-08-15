@@ -147,6 +147,13 @@ two of a fully-green one), which is unacceptable for a migration tool. The
 direct term fixes that: a fully-typed codebase scores near its structural
 ceiling, and the score falls monotonically as red code accumulates.
 
+Mid-migration this term can dominate and drown the structural signal. The
+plugin option **`scoreTypeRisk: false`** removes it entirely — the score
+becomes 100% structural (comprehension + blast), while the type-check pass
+keeps running and driving node coloring and the typed % readout.
+(`typeCheckCommand: false` skips the pass altogether, which also zeroes the
+term.)
+
 ### Complexity — the flaw weight $`W(m)`$
 
 $`\mathrm{cc}(m)`$ is the **cyclomatic complexity** of the file's script: the

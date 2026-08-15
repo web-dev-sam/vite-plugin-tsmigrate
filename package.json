@@ -1,6 +1,6 @@
 {
   "name": "vite-plugin-tsmigrate",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "A minimal, well-structured Vite 8 plugin (hello world) built with Vite+.",
   "keywords": [
     "plugin",

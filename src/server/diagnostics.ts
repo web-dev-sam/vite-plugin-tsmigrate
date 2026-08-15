@@ -12,7 +12,13 @@ export function collectDiagnostics(server: ViteDevServer, ripgrep: boolean): Dia
   let projectName = basename(root);
   try {
     const pkg: unknown = requireFromApp("./package.json");
-    if (pkg && typeof pkg === "object" && "name" in pkg && typeof pkg.name === "string" && pkg.name) {
+    if (
+      pkg &&
+      typeof pkg === "object" &&
+      "name" in pkg &&
+      typeof pkg.name === "string" &&
+      pkg.name
+    ) {
       projectName = pkg.name;
     }
   } catch {

@@ -71,7 +71,22 @@ const MAX_HOTSPOTS = 12;
 /** Max cycles shipped (largest by LoC) — enough to act on, not an SCC dump. */
 const MAX_CYCLES = 8;
 
-export function scoreMaintainability(graph: Graph): Maintainability {
+/** Tuning knobs threaded from plugin options. */
+export interface ScoreOptions {
+  /**
+   * Include type risk (the `types` driver) in the score. `false` makes the
+   * score purely structural: red files cost nothing, the type-risk
+   * reachability pass is skipped, and `drivers.types` is 0. `typeHealth`
+   * still reports the typed fraction when the type pass ran — it is
+   * progress information, not a cost.
+   */
+  scoreTypeRisk?: boolean;
+}
+
+export function scoreMaintainability(
+  graph: Graph,
+  { scoreTypeRisk = true }: ScoreOptions = {},
+): Maintainability {
   const { nodes, edges } = graph;
   const n = nodes.length;
 
@@ -82,7 +97,7 @@ export function scoreMaintainability(graph: Graph): Maintainability {
   // Type coverage: available iff the type-check pass ran (some node has a
   // non-null count). A node is "red" when it carries at least one own error.
   const typeAvailable = nodes.some((node) => node.typeErrors !== null);
-  const isRed = (i: number) => (nodes[i]!.typeErrors ?? 0) > 0;
+  const isRed = (i: number) => scoreTypeRisk && (nodes[i]!.typeErrors ?? 0) > 0;
 
   if (n === 0 || totalLoc === 0) {
     return {
@@ -155,9 +170,10 @@ export function scoreMaintainability(graph: Graph): Maintainability {
   // full one (every edge, incl. type-only) drives the type-risk radius — a
   // broken type propagates to precisely its type-dependents, which is what
   // `strictRed` already models. `import type` cycles are legal TS and carry no
-  // runtime hazard, so cycle flags come from the structural pass only.
+  // runtime hazard, so cycle flags come from the structural pass only. With
+  // type risk excluded from the score the full pass has no consumer — skip it.
   const structural = dependentReach(children, n, loc);
-  const typeRisk = dependentReach(childrenAll, n, loc);
+  const typeRisk = scoreTypeRisk ? dependentReach(childrenAll, n, loc) : null;
   const inCycle = (i: number) => structural.compSize[structural.comp[i]!]! > 1;
 
   // The actionable cycle shortlist: members of the largest structural SCCs.
@@ -212,12 +228,14 @@ export function scoreMaintainability(graph: Graph): Maintainability {
     // Dependents of i: everything reaching its component, plus the *other*
     // members of its own cycle (mutual dependents), minus i itself.
     const blastRadius = (structural.depLocOfComp[c]! + (structural.compLoc[c]! - li)) / totalLoc;
-    const ct = typeRisk.comp[i]!;
-    const typeRadius = (typeRisk.depLocOfComp[ct]! + (typeRisk.compLoc[ct]! - li)) / totalLoc;
-
     const comprehend = ALPHA * Math.max(0, ceW - HEALTHY_FANOUT);
     const blast = BETA * instability * blastRadius;
-    const types = isRed(i) ? GAMMA * (1 + DELTA * typeRadius) : 0;
+    let types = 0;
+    if (typeRisk !== null && isRed(i)) {
+      const ct = typeRisk.comp[i]!;
+      const typeRadius = (typeRisk.depLocOfComp[ct]! + (typeRisk.compLoc[ct]! - li)) / totalLoc;
+      types = GAMMA * (1 + DELTA * typeRadius);
+    }
     const flaws = comprehend + blast + types;
     // Complexity is a flaw *amplifier*, never a standalone penalty: a dense,
     // branch-heavy file makes each structural/type flaw costlier to change
