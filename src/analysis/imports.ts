@@ -510,6 +510,32 @@ export function extractSfcScripts(sfc: string): string {
   return blocks.join("\n");
 }
 
+const SCRIPT_TAG_RE = /<script\b([^>]*)>/gi;
+const LANG_TS_RE = /\blang\s*=\s*["']?tsx?["']?/i;
+const TS_EXTS = [".ts", ".tsx", ".mts", ".cts"];
+
+/**
+ * Whether a module already carries TypeScript contracts — the thing a
+ * migration adds, and what a depth-ordered work list has to filter on.
+ *
+ * `.ts`-family files do by definition; `.js`-family ones never do. An SFC
+ * counts as typed when EVERY `<script>` block declares `lang="ts"` (a mixed
+ * SFC still has an untyped half), and a script-less template counts as typed
+ * because it declares nothing to type.
+ */
+export function isTypedModule(filename: string, code: string): boolean {
+  const clean = filename.split("?")[0]!;
+  if (clean.endsWith(".vue")) {
+    for (const tag of code.matchAll(SCRIPT_TAG_RE)) {
+      if (!LANG_TS_RE.test(tag[1]!)) {
+        return false;
+      }
+    }
+    return true;
+  }
+  return TS_EXTS.some((ext) => clean.endsWith(ext));
+}
+
 // Template branch points: each `v-if`/`v-else-if`/`v-for`/`v-show` binding is
 // one decision the reader must trace (`v-else` is the arm of its `v-if`, not
 // a new decision). Matched as attributes (`=` required) so prose mentioning a

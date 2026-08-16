@@ -2,7 +2,7 @@ import { dirname, extname, join, sep } from "node:path";
 import type { ComponentEdge } from "../shared/types.ts";
 import { buildEdges, type EdgeSources, toWireEdges } from "./dependencies.ts";
 import type { AnalysisHost } from "./host.ts";
-import { extractSfcScripts, type ModuleRecord, parseModule } from "./imports.ts";
+import { extractSfcScripts, isTypedModule, type ModuleRecord, parseModule } from "./imports.ts";
 import { makeResolver } from "./resolve.ts";
 import type { Terminality } from "./symbols.ts";
 
@@ -17,10 +17,12 @@ const SCRIPT_EXTS: Record<string, true> = {
   ".cjs": true,
 };
 
-/** A reachable module and its kind, derived from the file extension. */
+/** A reachable module, its kind (from the file extension), and its type status. */
 export interface CrawlFile {
   id: string;
   kind: "vue" | "ts";
+  /** Already carries TypeScript contracts (see `isTypedModule`) — nothing to migrate. */
+  typed: boolean;
 }
 
 /**
@@ -140,6 +142,7 @@ export async function crawlGraph(host: AnalysisHost, entries: string[]): Promise
   const resolvedOf = new Map<string, Map<string, string | null>>();
   const globHitsOf = new Map<string, string[]>();
   const vueNodes = new Set<string>();
+  const typedOf = new Map<string, boolean>();
 
   // A resolved target is a crawlable project module: under the root, not a
   // virtual module or a dependency, and a script/SFC by extension.
@@ -163,6 +166,7 @@ export async function crawlGraph(host: AnalysisHost, entries: string[]): Promise
   // project modules (feeding discovery and the raw full-graph edges).
   const visit = async (file: string): Promise<string[]> => {
     const code = await host.readFile(file);
+    typedOf.set(file, isTypedModule(file, code ?? ""));
     if (!code) {
       records.set(file, { imports: [], exports: [], dynamic: [], globs: [], nsUsage: [] });
       return [];
@@ -299,7 +303,7 @@ export async function crawlGraph(host: AnalysisHost, entries: string[]): Promise
 
   const files: CrawlFile[] = [...directImports.keys()]
     .sort()
-    .map((id) => ({ id, kind: id.endsWith(".vue") ? "vue" : "ts" }));
+    .map((id) => ({ id, kind: id.endsWith(".vue") ? "vue" : "ts", typed: typedOf.get(id)! }));
   const moduleEdges = toWireEdges(
     buildEdges(
       files.map((f) => f.id),

@@ -10,6 +10,9 @@ status (green = typed, red = has or aggregates errors), sized by lines of
 code, with optional per-author `git blame`. A devtool in the spirit of
 vite-plugin-inspect and vue-devtools.
 
+It also ships a **`tsmigrate` CLI** that prints the same graph as a work
+list — child-first, so you type each file after the files it imports.
+
 Scaffolded and maintained with [Vite+](https://viteplus.dev) (`vp`).
 
 ## Install
@@ -58,6 +61,54 @@ tsmigrate({
   blame: true,
 });
 ```
+
+## CLI: `tsmigrate depth`
+
+A type is a contract, and a parent extends the contract of everything it
+imports — so typing a parent first means guessing its children's types, then
+writing them again. `tsmigrate depth` prints your files in the order that
+avoids it:
+
+```bash
+npx tsmigrate depth 0     # leaves: they import nothing else in your project
+npx tsmigrate depth 1     # their parents — every import already typed
+```
+
+Depth is the same measure the graph draws as concentric rings: the longest
+import path from a file down to a leaf. Omit it to get the whole migration in
+order, as `<depth>\t<file>`:
+
+```bash
+$ npx tsmigrate depth --untyped
+0	src/util/format.js
+1	src/components/Legacy.vue
+2	src/views/Dashboard.vue
+tsmigrate: 3 untyped of 41 files, depth 0-6, full graph, root /app
+```
+
+stdout carries nothing but paths, so it pipes straight into a todo list, a
+`git add`, or a codemod:
+
+```bash
+npx tsmigrate depth 0 --untyped | sed 's/^/- [ ] /' >> TODO.md
+```
+
+| Flag               | Description                                                                                         |
+| ------------------ | --------------------------------------------------------------------------------------------------- |
+| `-u, --untyped`    | Only files that still need typing: the `.js` family, or an SFC whose `<script>` is not `lang="ts"`. |
+| `-g, --graph <g>`  | `full` (every module) or `vue` (components only, barrel hops collapsed). Default `full`.            |
+| `-j, --json`       | Emit `{ root, graph, maxDepth, files, layers, cycles }` instead — layers already ordered.           |
+| `-r, --root <d>`   | Project root. Default cwd.                                                                          |
+| `-c, --config <f>` | Vite config file. Default auto-detected.                                                            |
+
+The CLI loads your Vite config (for the real resolver: aliases,
+`import.meta.glob`, SFC scripts) but runs nothing else — no dev server, no
+port, no `vue-tsc`, no git. vben's 719-file graph takes about a second.
+
+One caveat it reports rather than hides: **inside an import cycle there is no
+child-first order**, so those files' depth is arbitrary. Cycles are listed on
+stderr (and in `--json`) — type each cycle's files together, or cut an edge
+first.
 
 ## Options
 

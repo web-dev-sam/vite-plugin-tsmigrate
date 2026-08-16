@@ -2,6 +2,8 @@ import { defineConfig } from "vite-plus";
 
 export default defineConfig({
   pack: {
+    // Two entries: the plugin, and the `tsmigrate` bin (src/bin.ts).
+    entry: ["src/index.ts", "src/bin.ts"],
     dts: {
       tsgo: true,
     },

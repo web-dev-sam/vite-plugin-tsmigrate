@@ -76,6 +76,39 @@ export function computeHeights(
 }
 
 /**
+ * Mutual-import cycles: the members of every non-trivial SCC of `children`,
+ * each component sorted, the list ordered by its first member.
+ *
+ * Depth is only a valid work order on a DAG. Inside a cycle no child-first
+ * sequence exists, and `computeHeights` breaks the tie by traversal order — so
+ * a consumer that orders work by depth must treat each cycle as ONE unit: the
+ * members carry each other's contracts and have to move together (or an edge
+ * has to be cut first).
+ */
+export function findCycles(ids: string[], children: Map<string, Set<string>>): string[][] {
+  const index = new Map<string, number>();
+  ids.forEach((id, i) => index.set(id, i));
+  const adjacency = ids.map((id) => {
+    const out: number[] = [];
+    for (const child of children.get(id) ?? []) {
+      const at = index.get(child);
+      if (at !== undefined) {
+        out.push(at);
+      }
+    }
+    return out;
+  });
+
+  const { comp, compCount } = stronglyConnected(adjacency, ids.length);
+  const members: string[][] = Array.from({ length: compCount }, () => []);
+  ids.forEach((id, i) => members[comp[i]!]!.push(id));
+  return members
+    .filter((component) => component.length > 1)
+    .map((component) => [...component].sort())
+    .sort((a, b) => a[0]!.localeCompare(b[0]!));
+}
+
+/**
  * Group used for angular clustering, checked in order:
  *  1. Monorepo: a `<workspace-package>/src/…` path groups by the package dir
  *     (e.g. vben's `packages/effects/access/src/…` → `access`).
@@ -217,4 +250,79 @@ export function makeGraph(
 
   const maxHeight = nodes.reduce((max, node) => Math.max(max, node.height), 0);
   return { nodes, edges: induced, maxHeight };
+}
+
+/**
+ * Iterative Tarjan SCC. Returns each node's component id and the component
+ * count; ids are assigned in reverse-topological order of the condensation
+ * (not relied upon by callers). Iterative to survive deep import chains.
+ */
+export function stronglyConnected(
+  children: number[][],
+  n: number,
+): { comp: Int32Array; compCount: number } {
+  const comp = new Int32Array(n).fill(-1);
+  const low = new Int32Array(n);
+  const disc = new Int32Array(n).fill(-1);
+  const onStack = new Uint8Array(n);
+  const stack: number[] = [];
+  let idx = 0;
+  let compCount = 0;
+
+  // Explicit DFS stack of (node, next-child-cursor).
+  const call: number[] = [];
+  const cursor: number[] = [];
+
+  for (let start = 0; start < n; start++) {
+    if (disc[start]! !== -1) {
+      continue;
+    }
+    call.push(start);
+    cursor.push(0);
+    while (call.length > 0) {
+      const v = call[call.length - 1]!;
+      if (cursor[cursor.length - 1] === 0 && disc[v]! === -1) {
+        disc[v] = low[v] = idx++;
+        stack.push(v);
+        onStack[v] = 1;
+      }
+      const kids = children[v]!;
+      let ci = cursor[cursor.length - 1]!;
+      let descended = false;
+      while (ci < kids.length) {
+        const w = kids[ci]!;
+        ci++;
+        if (disc[w]! === -1) {
+          cursor[cursor.length - 1] = ci;
+          call.push(w);
+          cursor.push(0);
+          descended = true;
+          break;
+        } else if (onStack[w] === 1) {
+          low[v] = Math.min(low[v]!, disc[w]!);
+        }
+      }
+      if (descended) {
+        continue;
+      }
+      cursor[cursor.length - 1] = ci;
+      // All children processed: fold the just-returned child's low, then close.
+      call.pop();
+      cursor.pop();
+      if (call.length > 0) {
+        const parent = call[call.length - 1]!;
+        low[parent] = Math.min(low[parent]!, low[v]!);
+      }
+      if (low[v]! === disc[v]!) {
+        let w = -1;
+        do {
+          w = stack.pop()!;
+          onStack[w] = 0;
+          comp[w] = compCount;
+        } while (w !== v);
+        compCount++;
+      }
+    }
+  }
+  return { comp, compCount };
 }

@@ -17,17 +17,32 @@ A minimal, well-structured **Vite 8** plugin (hello world), developed with the
   blame lines-per-author** per component, served via `/api/graph` with
   progressive per-analyzer status. `/api/diagnostics` is the environment
   summary. Edges exist for a future d3 graph view.
-- Built with `vp run build`: `vp pack` (tsdown → `dist/index.mjs` + types)
+- Also a **CLI**: `tsmigrate depth [n]` prints the crawl as a child-first work
+  list (depth 0 = leaves) — a type is a contract and a parent extends the
+  contract of everything it imports, so migration only pays off bottom-up.
+  Headless: loads the user's Vite config for the real resolver, then crawls.
+  No dev server, no port, no type-check pass, no git, no score.
+- Built with `vp run build`: `vp pack` (tsdown → `dist/index.mjs`,
+  `dist/bin.mjs` + types; entries live in `vite.config.ts`'s `pack.entry`)
   then `vite build tool` (tool UI → `dist/client`). npm ships all of `dist/`.
 
 ## Architecture (dependency direction is enforced, acyclic)
 
 - `src/index.ts` — public API + hook wiring ONLY; read this first.
+- `src/cli.ts` — the `tsmigrate` CLI: argv → crawl → depth layers → stdout
+  (paths only, sorted) + stderr (summary, cycle warnings). Reuses
+  `server/vite-adapter.ts` — still the only Vite seam — with a
+  **middleware-mode** server, so nothing binds a port (not even the tool
+  server when the plugin sits in the user's config). `src/bin.ts` is the
+  shebang wrapper: process wiring, nothing else.
 - `src/shared/types.ts` — plugin ↔ tool UI wire contract; environment-neutral;
   the tool imports these types directly (type-only) — NEVER re-declare them.
 - `src/analysis/` — **pure core, no `vite` imports, no process spawning**;
   capabilities injected via `AnalysisHost` (`host.ts`): resolver, fs, git.
   - `graph.ts` — entry discovery + BFS crawl; barrel-collapsing edges.
+  - topology.ts — pure graph math shared by the tool and the CLI: heights
+    (the depth rings), strict-red propagation, grouping, Tarjan SCC
+    (`findCycles`, also used by the score), induced-subgraph assembly.
   - `imports.ts` — regex import scanner (designated swap point: oxc-parser).
   - `analyzers/` — the extension point: `Analyzer<T>` with `cost: "inline" |
 "queued"`; currently `loc` and `blame`.
@@ -61,6 +76,7 @@ A minimal, well-structured **Vite 8** plugin (hello world), developed with the
 | New Vite hook       | own top-level module, wired in `index.ts`         |
 | Vite API usage      | `server/vite-adapter.ts` ONLY                     |
 | Wire shape          | `shared/types.ts` (server + tool consume it)      |
+| New CLI flag        | `cli.ts` (argv parse + render only)               |
 
 ## Project conventions
 
@@ -75,6 +91,10 @@ A minimal, well-structured **Vite 8** plugin (hello world), developed with the
   options-API SFCs; `tests/index.test.ts` boots real Vite servers, including a
   full graph e2e against the hermetic app in `tests/fixtures/app/`. Keep both
   green.
+  `tests/cli.test.ts` drives the CLI in-process (`run(argv, io)`) against
+  `tests/fixtures/migrating/` — a half-migrated app with an untyped SFC, a
+  `.js` leaf and a real import cycle — so the child-first order, the
+  `--untyped` filter and the cycle warning are covered without spawning.
 - **Playground consumes the plugin from source** (`../src/index.ts`) —
   instant dev loop; packaging is validated by `vp pack` + attw.
 - **Tool UI is prebuilt, not dev-served:** the plugin serves `dist/client`
