@@ -25,7 +25,7 @@ bills:
    every week means your mental model keeps going stale. A healthy number
    of imports costs nothing at all.
 3. **Blast** — after your change, everything that imports the file — and
-   everything that imports *those* files, all the way up — must be
+   everything that imports _those_ files, all the way up — must be
    re-checked. The bill scales with how much of the codebase sits downstream
    **and** how often this file actually changes.
 4. **Mass** — tangled logic in a big file. Every `if`, loop, and ternary
@@ -51,28 +51,28 @@ Formally:
 
 Measured per file:
 
-| Symbol             | Plain meaning                                                                                                                                             |
-| ------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| $\mathrm{loc}(m)$  | The file's **maintainable lines**: the source with its `<style>` and `<svg>` blocks stripped.                                                             |
-| $\mathrm{vol}(m)$  | **Volatility**, 0–1: how likely the file is to change soon, measured from git history (see [Volatility](#volatility--the-shared-change-likelihood-term)). |
-| $r(m)$             | **Blast radius**, 0–1: the fraction of the codebase's lines sitting in files that import `m`, directly or through other files.                            |
-| $C_e^{w}(m)$       | **Weighted import count**: each import counted by its target's volatility — a stable constants file ≈ 0, a churning store ≈ 1.                            |
-| $\mathrm{cc}(m)$   | **Decision points**: `if`, loops, ternaries, `&&`/`\|\|`/`??`, `case`, `catch`, plus template `v-if`/`v-for`/`v-show`.                                     |
-| $t(m)$             | 1 if the file has its own type errors ("red"), else the typed discount $D$.                                                                               |
+| Symbol              | Plain meaning                                                                                                                                             |
+| ------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| $\mathrm{loc}(m)$   | The file's **maintainable lines**: the source with its `<style>` and `<svg>` blocks stripped.                                                             |
+| $\mathrm{vol}(m)$   | **Volatility**, 0–1: how likely the file is to change soon, measured from git history (see [Volatility](#volatility--the-shared-change-likelihood-term)). |
+| $r(m)$              | **Blast radius**, 0–1: the fraction of the codebase's lines sitting in files that import `m`, directly or through other files.                            |
+| $C_e^{w}(m)$        | **Weighted import count**: each import counted by its target's volatility — a stable constants file ≈ 0, a churning store ≈ 1.                            |
+| $\mathrm{cc}(m)$    | **Decision points**: `if`, loops, ternaries, `&&`/`\|\|`/`??`, `case`, `catch`, plus template `v-if`/`v-for`/`v-show`.                                    |
+| $t(m)$              | 1 if the file has its own type errors ("red"), else the typed discount $D$.                                                                               |
 | $u_{\text{dep}}(m)$ | Of all the lines downstream of `m` (the $r$ set), the fraction living in **red** files — "how much of what I can break is unprotected by types?"          |
 
 Tunable constants (defined once in
 [`src/analysis/maintainability.ts`](../src/analysis/maintainability.ts)):
 
-| Symbol   | Plain meaning                                                                                                                                    | Default |
-| -------- | ------------------------------------------------------------------------------------------------------------------------------------------------ | ------- |
-| $K$      | Free import budget: the first $K$ weighted import-points cost nothing — ordinary modularity is free.                                             | `8`     |
+| Symbol   | Plain meaning                                                                                                                                     | Default |
+| -------- | ------------------------------------------------------------------------------------------------------------------------------------------------- | ------- |
+| $K$      | Free import budget: the first $K$ weighted import-points cost nothing — ordinary modularity is free.                                              | `8`     |
 | $\alpha$ | Price per import-point over budget: each one makes **every line of the file 5% harder to read** (the whole file is read amid those moving parts). | `0.05`  |
 | $\beta$  | Blast ceiling: the worst case — a file everyone imports that changes constantly — costs $\beta\times$ its own length extra per change.            | `3`     |
 | $\kappa$ | Price of one decision point in a pivot-sized file: 1 branch in a 300-line file = the effort of reading one line.                                  | `1`     |
 | $L_0$    | The "normal file" size mass prices against. At $p = 1$ only $\kappa/L_0$ matters — freeze $L_0$, tune $\kappa$.                                   | `300`   |
-| $p$      | How fast a branch's price grows with file size (1 = linear). Raise to 1.25–1.5 if god files rank too low in the hotspots.                          | `1`     |
-| $D$      | Typed discount: typed code pays this fraction of a flaw's cost — the compiler carries the rest.                                                    | `0.2`   |
+| $p$      | How fast a branch's price grows with file size (1 = linear). Raise to 1.25–1.5 if god files rank too low in the hotspots.                         | `1`     |
+| $D$      | Typed discount: typed code pays this fraction of a flaw's cost — the compiler carries the rest.                                                   | `0.2`   |
 
 A worked example: a **red** 300-line file with 12 weighted imports, cc 30,
 vol 0.5, 10% of the codebase downstream of which half is red.
@@ -93,7 +93,7 @@ reading every file once (`Σ loc`); and the **overhead ratio**
 \Omega = \frac{\mathrm{cost} - \mathrm{floor}}{\mathrm{floor}}
 ```
 
-is what the score maps: "how much does this codebase charge me *on top of*
+is what the score maps: "how much does this codebase charge me _on top of_
 the reading that any codebase requires?"
 
 ## The scale: criterion-referenced, two legible constants
@@ -268,7 +268,7 @@ re-test everything downstream. The bill is the product of:
 
 Multiplying radius by measured volatility is the key move: a rock-stable
 foundation imported by everyone costs **nothing** — popular but frozen means
-the blast never goes off. A hub that half the app imports *and* that gets
+the blast never goes off. A hub that half the app imports _and_ that gets
 rewritten weekly finally costs what it feels like. An import **cycle** folds
 its entire LoC into every member's blast radius (cycle members are mutual
 dependents), so cycles are penalised _through_ blast rather than by an ad-hoc
@@ -293,8 +293,8 @@ the size escalator only fires on branches, a 3,000-line file of flat data
 
 ### Types — a discount, not a penalty
 
-A file is **red** when the type-checker reports at least one error *inside
-it* — an implicit `any`, a missing prop type — meaning the compiler can't
+A file is **red** when the type-checker reports at least one error _inside
+it_ — an implicit `any`, a missing prop type — meaning the compiler can't
 vouch for it and a human must. Types are a cost **discount on every flaw**,
 not a term of their own: the compiler carries most of the re-verification
 wherever code is typed. Per file, with $D = 0.2$:
@@ -307,7 +307,7 @@ wherever code is typed. Per file, with $D = 0.2$:
   files (same reach set as the blast radius, weighted by red LoC). The
   slider runs from $D$ (everything downstream typed — `tsc` re-checks it for
   you) to 1 (everything red — humans re-reason it by hand), and it depends on
-  the *dependents'* colour, not `m`'s own: typed downstream code is cheap to
+  the _dependents'_ colour, not `m`'s own: typed downstream code is cheap to
   re-verify no matter what you changed.
 
 Consequences worth naming: a red file with no flaws costs **nothing** (types
