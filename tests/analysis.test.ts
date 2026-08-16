@@ -1782,15 +1782,15 @@ test("collectChurn attributes files to their nearest repo (submodule boundary)",
   expect(logs.sort()).toEqual(["/app", "/app/sub"]);
 });
 
-test("engine churn pass blends git history into volatility and reports coverage", async () => {
-  // 15 recent commits rewriting App.vue — main.ts and friends stay untouched.
+/** fakeHost whose git log shows 15 recent commits rewriting App.vue. */
+function churnFakeHost(): AnalysisHost {
   const nowSec = Math.floor(Date.now() / 1000);
   const rows: string[] = [];
   for (let i = 0; i < 15; i++) {
     rows.push(`\x01${nowSec - (i + 1) * DAY}`, "8\t4\tsrc/App.vue", "");
   }
   const gitLog = rows.join("\n");
-  const churnHost: AnalysisHost = {
+  return {
     ...fakeHost(),
     async runGit(args) {
       if (args[0] === "rev-parse") {
@@ -1802,13 +1802,16 @@ test("engine churn pass blends git history into volatility and reports coverage"
       return gitLog;
     },
   };
+}
+
+test("engine churn pass blends git history into volatility and reports coverage", async () => {
   const run = async (churn: boolean, host: AnalysisHost) => {
     const engine = new AnalysisEngine(host, { churn });
     await expect.poll(async () => (await engine.getGraph()).complete, { timeout: 2000 }).toBe(true);
     return (await engine.getGraph()).maintainability;
   };
   const off = await run(false, fakeHost());
-  const on = await run(true, churnHost);
+  const on = await run(true, churnFakeHost());
 
   // Churn off → coverage null, volatility is the structural prior.
   expect(off.churnCoverage).toBeNull();
@@ -1818,6 +1821,23 @@ test("engine churn pass blends git history into volatility and reports coverage"
   expect(on.churnCoverage!).toBeLessThan(1);
   const app = "/app/src/App.vue";
   expect(on.volatility[app]!).toBeGreaterThan(off.volatility[app]!);
+});
+
+test("overlapping getGraph() polls share one pass and keep the churn pass alive", async () => {
+  // An open tool tab plus any second poller overlap the very first pass. A
+  // re-entrant traversal would skip the already-cleared crawl, publish a
+  // zero-node snapshot, and consume the churn dirty flag against zero files —
+  // and since HEAD never moves again in a dev session, churn would stay dead
+  // until restart.
+  const engine = new AnalysisEngine(churnFakeHost(), { churn: true });
+  const [a, b] = await Promise.all([engine.getGraph(), engine.getGraph()]);
+  expect(a.full.nodes.length).toBeGreaterThan(0);
+  expect(b.full.nodes.length).toBe(a.full.nodes.length);
+  expect(b.coverage.graphFiles).toBe(a.coverage.graphFiles);
+  expect(b.coverage.graphLoc).toBe(a.coverage.graphLoc);
+
+  await expect.poll(async () => (await engine.getGraph()).complete, { timeout: 2000 }).toBe(true);
+  expect((await engine.getGraph()).maintainability.churnCoverage).toBeGreaterThan(0);
 });
 
 // --- crawl coverage + auto-import manifests ---------------------------------

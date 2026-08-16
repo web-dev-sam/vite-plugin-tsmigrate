@@ -57,6 +57,7 @@ export class AnalysisEngine {
   private scheduled = new Set<string>();
   private headSha: string | null = null;
   private disposed = false;
+  private inFlight: Promise<ComponentGraph> | null = null;
 
   // Project-wide type-check pass state (only used when enabled).
   private typeErrors = new Map<string, number>();
@@ -138,7 +139,27 @@ export class AnalysisEngine {
     this.queue.length = 0;
   }
 
-  async getGraph(): Promise<ComponentGraph> {
+  /**
+   * Snapshot entry point. Concurrent callers (an open tool tab, a second tab,
+   * any other poller) share ONE in-flight pass: `buildGraph` mutates
+   * engine-wide crawl state across awaits, so a re-entrant traversal skips the
+   * already-cleared `graphDirty` crawl, observes a half-assembled engine
+   * (empty `files`, no LoC facts), publishes a zero-node snapshot AND consumes
+   * the churn dirty flag against zero files — killing churn until HEAD moves.
+   */
+  getGraph(): Promise<ComponentGraph> {
+    const inFlight = this.inFlight;
+    if (inFlight) {
+      return inFlight;
+    }
+    const run = this.buildGraph().finally(() => {
+      this.inFlight = null;
+    });
+    this.inFlight = run;
+    return run;
+  }
+
+  private async buildGraph(): Promise<ComponentGraph> {
     await this.refreshHead();
     // Clear the flag BEFORE awaiting the crawl: a watcher invalidation that
     // arrives mid-crawl re-arms `graphDirty` and the loop re-crawls, so the
