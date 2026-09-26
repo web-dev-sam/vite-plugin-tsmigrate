@@ -12,9 +12,7 @@ _A Vite 8 dev-tool plugin that visualises a Vue app's TypeScript migration progr
 &nbsp;
 
 ## Why does this exist?
-1. Watching a JavaScript → TypeScript migration turn from red to green shows which files still block it, and how much code (and whose) each one carries.
-2. A type is a contract, and a parent extends the contract of everything it imports — so files should be typed child-first, and `tsmigrate depth` prints them in that order.
-3. A devtool in the spirit of vite-plugin-inspect and vue-devtools.
+Watching a JavaScript → TypeScript migration turn from red to green shows which files still block it, and how much code (and whose) each one carries.
 
 ## What it is
 
