@@ -3,8 +3,8 @@
 /*
  * Design tokens — the prototype's GitHub-dark palette exposed to Tailwind v4
  * so components compose with `bg-panel`, `text-muted`, `text-green`, … instead
- * of scattering raw hex. The SVG scene classes below stay in plain CSS because
- * d3 toggles them imperatively by class name.
+ * of scattering raw hex. The graph scene itself is WebGL (graph/gl.ts), which
+ * carries its own copies of these colours.
  */
 @theme {
   --color-canvas: #0d1117;
@@ -24,7 +24,7 @@
 /*
  * GitHub-dark base for the dev tool (mirrors the d3 prototype's stylesheet).
  * Tailwind utilities handle the panel/chrome layout; these globals set the
- * full-viewport dark canvas and the SVG scene classes d3 toggles directly.
+ * full-viewport dark canvas.
  */
 @layer base {
   :root {
@@ -45,95 +45,6 @@
   #app {
     height: 100%;
   }
-}
-
-/* SVG scene classes toggled imperatively by graph/render.ts. */
-.ring {
-  fill: none;
-  stroke: #21262d;
-}
-
-/*
- * Edge base opacity/width are per-element SVG attributes set by renderLinks()
- * (volatility-weighted; see render.ts) — they must NOT live here, because CSS
- * class rules override presentation attributes. `.hl`/`.dim` below win over
- * the attributes for exactly that reason; `.hl` keeps a per-edge weight via
- * the `--hlo` custom property (floored so trace mode stays usable).
- */
-.link {
-  stroke: #30363d;
-}
-
-.link.type {
-  stroke-dasharray: 4 3;
-}
-
-/* Lazy (dynamic import / glob) edges: distinct dash from type-only. */
-.link.lazy {
-  stroke-dasharray: 1.5 3;
-}
-
-.link.hl {
-  stroke: #58a6ff;
-  stroke-opacity: var(--hlo, 0.95);
-}
-
-.node {
-  stroke: #0d1117;
-  stroke-width: 0.6px;
-  cursor: pointer;
-}
-
-.node.ts {
-  stroke: var(--color-ts);
-  stroke-width: 1.2px;
-}
-
-.node.dim {
-  opacity: 0.12;
-}
-
-.node.focus-root {
-  filter: drop-shadow(0 0 6px rgba(255, 255, 255, 0.55));
-}
-
-/* Driver-highlight rings behind nodes — fill/opacity set imperatively by render.ts. */
-.halo {
-  pointer-events: none;
-}
-
-.link.dim {
-  stroke-opacity: 0.04;
-}
-
-.rlabel {
-  fill: #05080d;
-  font-weight: 700;
-  pointer-events: none;
-  user-select: none;
-  font-family: ui-monospace, monospace;
-}
-
-.rlabel.dim {
-  opacity: 0.12;
-}
-
-.flabel {
-  fill: #c9d1d9;
-  /* User-space size: scales with zoom (small when zoomed out, readable zoomed
-     in). Drawn behind the nodes so the graph stays legible. */
-  font-size: 5px;
-  font-weight: 600;
-  paint-order: stroke;
-  stroke: #05080d;
-  stroke-width: 0.18em;
-  pointer-events: none;
-  user-select: none;
-  font-family: ui-monospace, monospace;
-}
-
-.flabel.dim {
-  opacity: 0.12;
 }
 
 /* Hover tooltip — owned by GraphChart.vue markup, filled by graph/render.ts. */

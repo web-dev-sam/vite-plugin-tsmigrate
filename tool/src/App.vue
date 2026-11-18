@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, reactive, ref, watch } from "vue";
+import { computed, nextTick, onMounted, onUnmounted, reactive, ref, shallowRef, watch } from "vue";
 import type { ComponentGraph, Diagnostics, MaintainabilityDriver } from "../../src/shared/types.ts";
 import { fetchDiagnostics, fetchGraph, fetchSearch } from "./api/client.ts";
 import ControlPanel from "./components/ControlPanel.vue";
@@ -14,7 +14,9 @@ import type { Controls, CycleInfo, NodeDetail, Readouts } from "./graph/render.t
  * two-way-binds every control; the chart renders whichever induced graph
  * (`vue` or `full`) the TS-swap selects and reports its readouts back up.
  */
-const graph = ref<ComponentGraph | null>(null);
+// Shallow: the graph is replaced wholesale per poll and never mutated, so deep
+// reactive proxies over thousands of nodes/edges would only slow every read.
+const graph = shallowRef<ComponentGraph | null>(null);
 const diag = ref<Diagnostics | null>(null);
 const readouts = ref<Readouts | null>(null);
 // Detail of the hovered/selected graph node — feeds the sidebar's bottom panel

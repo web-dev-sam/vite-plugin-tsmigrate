@@ -16,9 +16,10 @@ import {
 } from "../graph/render.ts";
 
 /**
- * Thin Vue wrapper around the framework-agnostic d3 renderer. Owns the
- * full-viewport `<svg>` and its hover tooltip; drives the renderer from props
- * and surfaces the renderer's computed readouts back up as an event.
+ * Thin Vue wrapper around the framework-agnostic renderer. Owns the
+ * full-viewport host element (the renderer adds its WebGL + text canvases)
+ * and the hover tooltip; drives the renderer from props and surfaces its
+ * computed readouts back up as an event.
  */
 const props = defineProps<{
   graph: Graph;
@@ -39,14 +40,14 @@ const emit = defineEmits<{
   nodeDetail: [NodeDetail | null];
 }>();
 
-const svgRef = ref<SVGSVGElement | null>(null);
+const hostRef = ref<HTMLDivElement | null>(null);
 const tipRef = ref<HTMLElement | null>(null);
 let controller: GraphController | null = null;
 
 onMounted(() => {
-  if (!svgRef.value || !tipRef.value) return;
+  if (!hostRef.value || !tipRef.value) return;
   controller = initGraph({
-    svg: svgRef.value,
+    host: hostRef.value,
     tooltip: tipRef.value,
     onReadouts: (r) => emit("readouts", r),
     onOpenSource: (n) => emit("openSource", n),
@@ -60,7 +61,8 @@ onMounted(() => {
   controller.setBreakdown(props.breakdown, props.volatility);
 });
 
-// A new graph reference means a vue↔full swap or fresh server data.
+// A new graph reference means a vue↔full swap or fresh server data (the
+// renderer restyles in place when the topology is unchanged).
 watch(
   () => props.graph,
   (g) => controller?.setGraph(g),
@@ -94,7 +96,10 @@ defineExpose({
 </script>
 
 <template>
-  <svg ref="svgRef" class="block h-screen w-screen cursor-grab bg-canvas active:cursor-grabbing" />
+  <div
+    ref="hostRef"
+    class="relative block h-screen w-screen cursor-grab overflow-hidden bg-canvas active:cursor-grabbing"
+  />
   <div
     ref="tipRef"
     class="tip pointer-events-none fixed max-w-[340px] rounded-md border border-border bg-[#010409]/95 px-2 py-1.5 text-xs opacity-0 transition-opacity duration-75"

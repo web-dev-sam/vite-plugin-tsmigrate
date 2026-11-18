@@ -16,15 +16,18 @@ A minimal, well-structured **Vite 8** plugin (hello world), developed with the
   `.vue` files, edges collapse pass-through barrels), **LoC**, and **git
   blame lines-per-author** per component, served via `/api/graph` with
   progressive per-analyzer status. `/api/diagnostics` is the environment
-  summary. Edges exist for a future d3 graph view.
+  summary. The tool draws the graph with WebGL2 and lays it out with a
+  Rust/WASM force simulation in a Web Worker (see `tool/` below).
 - Also a **CLI**: `tsmigrate depth [n]` prints the crawl as a child-first work
   list (depth 0 = leaves) — a type is a contract and a parent extends the
   contract of everything it imports, so migration only pays off bottom-up.
   Headless: loads the user's Vite config for the real resolver, then crawls.
   No dev server, no port, no type-check pass, no git, no score.
-- Built with `vp run build`: `vp pack` (tsdown → `dist/index.mjs`,
-  `dist/bin.mjs` + types; entries live in `vite.config.ts`'s `pack.entry`)
-  then `vite build tool` (tool UI → `dist/client`). npm ships all of `dist/`.
+- Built with `vp run build`: `build:layout` (cargo → `tool/layout` wasm32,
+  needs the `wasm32-unknown-unknown` target), `vp pack` (tsdown →
+  `dist/index.mjs`, `dist/bin.mjs` + types; entries live in
+  `vite.config.ts`'s `pack.entry`), then `vite build tool` (tool UI →
+  `dist/client`, wasm included). npm ships all of `dist/`.
 
 ## Architecture (dependency direction is enforced, acyclic)
 
@@ -65,6 +68,19 @@ A minimal, well-structured **Vite 8** plugin (hello world), developed with the
 - `src/constants.ts`, `options.ts` (defaults live ONLY in `resolveOptions`),
   `virtual.ts`, `log.ts` (Vite-styled output via picocolors — keep new lines
   consistent).
+- `tool/src/graph/` — the tool's graph view, framework-agnostic:
+  - `render.ts` — controller: state, readouts, interactions (d3 only for
+    zoom/drag/quadtree/scales), Canvas2D text overlay. Same topology on a
+    new snapshot → restyle in place (no relayout, focus kept).
+  - `gl.ts` — WebGL2 scene. Vertex pulling from data textures, NOT
+    instancing (ANGLE/D3D11 instancing measured ~80× slower). The scene is
+    rasterized into a framebuffer cache with margins: pan = texel blit,
+    mid-zoom = resampled blit, crisp re-raster when the gesture pauses.
+  - `layout.ts` / `layout.worker.ts` — main-thread client + worker hosting
+    the wasm simulation; positions stream back as transferable arrays.
+- `tool/layout/` — Rust crate: d3-force's exact force set (link, Barnes–Hut
+  charge, radial, x/y anchors, grid collide) behind a raw C ABI, no
+  wasm-bindgen. Force constants live here. `cargo test` covers it.
 
 ## Where changes land
 
@@ -77,6 +93,8 @@ A minimal, well-structured **Vite 8** plugin (hello world), developed with the
 | Vite API usage      | `server/vite-adapter.ts` ONLY                     |
 | Wire shape          | `shared/types.ts` (server + tool consume it)      |
 | New CLI flag        | `cli.ts` (argv parse + render only)               |
+| Graph drawing       | `tool/src/graph/gl.ts` (+ styling in `render.ts`) |
+| Layout forces       | `tool/layout/src/lib.rs` (+ `cargo test`)         |
 
 ## Project conventions
 

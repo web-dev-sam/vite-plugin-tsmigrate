@@ -39,9 +39,10 @@
     "access": "public"
   },
   "scripts": {
-    "build": "vp pack && vp exec vite build tool",
+    "build": "vp run build:layout && vp pack && vp exec vite build tool",
+    "build:layout": "cargo build --manifest-path tool/layout/Cargo.toml --release --target wasm32-unknown-unknown",
     "dev": "vp pack --watch",
-    "dev:tool": "node scripts/dev.mjs",
+    "dev:tool": "vp run build:layout && node scripts/dev.mjs",
     "test": "vp test",
     "check": "vp check",
     "prepublishOnly": "vp run build"

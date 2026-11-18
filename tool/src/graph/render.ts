@@ -6,21 +6,27 @@ import type {
   MaintainabilityContributions,
   MaintainabilityDriver,
 } from "../../../src/shared/types.ts";
+import { DISC_COLORS, DISC_GEOM, EDGE_STYLE, Scene } from "./gl.ts";
+import { INPUT_STRIDE, LayoutClient } from "./layout.ts";
 import { type Adjacency, buildAdjacency, type FocusDir, isolateSet } from "./select.ts";
 
 /**
- * Framework-agnostic d3 renderer for the radial typing-progress graph — a
- * faithful port of the prototype in `vis/graph.html`. Vue owns the chrome
- * (panel, tooltip element, control state); this module owns the SVG scene and
- * every graph interaction, and hands view-local readouts back through a
- * callback so the panel can render them.
+ * Framework-agnostic renderer for the radial typing-progress graph. Vue owns
+ * the chrome (panel, tooltip element, control state); this module owns the
+ * scene and every graph interaction, and hands view-local readouts back
+ * through a callback so the panel can render them.
  *
- * Interactions ported verbatim from the prototype: deterministic angular
- * seeding by folder wedge per depth ring, a settling force simulation with
- * fit-to-bounds, ring circles + depth labels, drag, zoom/pan, hover
- * neighbour-highlight with tooltip, click-to-isolate an import subtree, a
- * clickable depth-row isolate, strict/naive recolour, and the
- * only-red / show-rings / show-blame / search view filters.
+ * Rendering is WebGL2 (`./gl.ts`: rings, edges, halos, nodes as instanced
+ * draws) with a Canvas2D overlay for text; the force layout runs off the main
+ * thread in Rust/WASM (`./layout.ts`). The main thread only rebuilds typed
+ * arrays when the *styling* changes (filters, hover, search) — layout ticks
+ * and pan/zoom never touch per-element state.
+ *
+ * Interactions: deterministic angular seeding by folder wedge per depth ring,
+ * a settling force simulation with fit-to-bounds, ring circles + depth labels,
+ * drag, zoom/pan, hover neighbour-highlight with tooltip, click-to-isolate an
+ * import subtree, a clickable depth-row isolate, strict/naive recolour, and
+ * the only-red / show-rings / show-blame / search view filters.
  */
 
 // GitHub-dark tokens (mirrors the prototype stylesheet).
@@ -41,10 +47,39 @@ const HALO_OFFSET = 6;
 const HALO_STROKE = 2;
 const HALO_EPS = 0.03;
 
+type Rgb = readonly [number, number, number];
+const rgb = (hex: string): Rgb => {
+  const v = Number.parseInt(hex.slice(1), 16);
+  return [v >> 16, (v >> 8) & 255, v & 255];
+};
+const GREEN_RGB = rgb(GREEN);
+const RED_RGB = rgb(RED);
+const NEUTRAL_RGB = rgb(NEUTRAL);
+const TS_STROKE_RGB = rgb("#3178c6");
+const NODE_STROKE_RGB = rgb("#0d1117");
+const RING_RGB = rgb("#21262d");
+const WHITE_RGB = rgb("#ffffff");
+/** `.dim` opacity of nodes and labels. */
+const DIM = 0.12;
+
 const TAU = 2 * Math.PI;
 const RING = 150;
-/** Pre-tick count that settles the layout before the first paint. */
+/** Settling ticks before the layout counts as placed (d3's pre-tick count). */
 const PRETICKS = 340;
+/**
+ * A topology change that keeps at least this share of nodes on their depth
+ * ring restarts the layout warm from the previous positions instead of
+ * re-seeding (progressive analysis adds/removes a few modules at a time).
+ */
+const WARM_SHARE = 0.9;
+/** Labels smaller than this many CSS pixels are not drawn (unreadable anyway). */
+const MIN_LABEL_PX = 3;
+/** Canvas font size the label glyphs are laid out at, then scaled per label. */
+const FONT_UNIT = 100;
+/** `.flabel` font size, in user units. */
+const FILE_FONT = 5;
+/** A zoom gesture counts as paused (crisp re-raster) after this long without a scale change. */
+const ZOOM_SETTLE_MS = 150;
 
 /**
  * Compute the zoom transform that fits the bounding box of `pts` into a
@@ -245,19 +280,24 @@ export interface NodeDetail {
 }
 
 export interface InitOptions {
-  svg: SVGSVGElement;
+  /** Positioned element the renderer fills with its canvases and listens on. */
+  host: HTMLElement;
   /** Fixed tooltip element the renderer fills and positions on hover. */
   tooltip: HTMLElement;
   /** Fires whenever the shown set or colour mode changes. */
   onReadouts: (readouts: Readouts) => void;
-  /** Fires on a node double-click — opens the source-view modal. */
+  /** Fires on a node Ctrl/Cmd-click — opens the source-view modal. */
   onOpenSource: (node: { id: string; file: string }) => void;
   /** Fires with the hovered/selected node's structured detail (null clears the panel). */
   onNodeDetail: (detail: NodeDetail | null) => void;
 }
 
 export interface GraphController {
-  /** Rebuild the whole scene for a graph (vue ↔ full swap or fresh data). */
+  /**
+   * Show a graph. Same topology as the current one (progressive analysis
+   * facts) → restyle in place, keeping layout, focus and zoom; otherwise
+   * rebuild the scene and relayout.
+   */
   setGraph(graph: Graph): void;
   /**
    * Provide the FULL module graph + shipped cycles regardless of the shown
@@ -284,12 +324,14 @@ export interface GraphController {
     breakdown: Record<string, MaintainabilityBreakdown> | null,
     volatility: Record<string, number> | null,
   ): void;
-  /** Tear down the simulation, listeners and DOM. */
+  /** Tear down the layout worker, listeners and canvases. */
   destroy(): void;
 }
 
-/** Internal simulation node — the wire node adapted to the prototype's model. */
-interface RNode extends d3.SimulationNodeDatum {
+/** Internal node — the wire node adapted to the prototype's model. */
+interface RNode {
+  /** Position in the node arrays (layout positions, GPU instances). */
+  index: number;
   id: string;
   /** Path relative to the project root (used for display). */
   file: string;
@@ -312,13 +354,22 @@ interface RNode extends d3.SimulationNodeDatum {
   _sy: number;
 }
 
-interface RLink extends d3.SimulationLinkDatum<RNode> {
-  source: string | RNode;
-  target: string | RNode;
+interface RLink {
+  /** Importer node index. */
+  s: number;
+  /** Imported node index. */
+  t: number;
   /** Type-only import edge — rendered dashed, zero structural weight. */
   type: boolean;
   /** Lazy-only edge (dynamic import / glob) — distinct dash, zero comprehension weight. */
   lazy: boolean;
+}
+
+/** A d3-drag subject: the grabbed node and its screen position. */
+interface DragSubject {
+  index: number;
+  x: number;
+  y: number;
 }
 
 const esc = (s: unknown): string =>
@@ -326,9 +377,10 @@ const esc = (s: unknown): string =>
 
 const baseOf = (f: string): string => f.slice(f.lastIndexOf("/") + 1);
 
-/** Adapt a wire node into the internal simulation node. */
-function toRNode(n: ComponentNode): RNode {
+/** Adapt a wire node into the internal node. */
+function toRNode(n: ComponentNode, index: number): RNode {
   return {
+    index,
     id: n.id,
     file: n.file,
     name: n.name,
@@ -346,25 +398,72 @@ function toRNode(n: ComponentNode): RNode {
   };
 }
 
-export function initGraph(opts: InitOptions): GraphController {
-  const { tooltip, onReadouts, onOpenSource, onNodeDetail } = opts;
-  const svg = d3.select(opts.svg);
-  const root = svg.append("g");
-  const ringG = root.append("g");
-  const linkG = root.append("g");
-  const haloG = root.append("g");
-  const fileLabelG = root.append("g");
-  const nodeG = root.append("g");
-  const labelG = root.append("g");
+/** Same node ids, edges and depth count, in the same order — i.e. the layout still applies. */
+function sameTopology(a: Graph, b: Graph): boolean {
+  if (
+    a.maxHeight !== b.maxHeight ||
+    a.nodes.length !== b.nodes.length ||
+    a.edges.length !== b.edges.length
+  ) {
+    return false;
+  }
+  for (let i = 0; i < a.nodes.length; i++) {
+    if (a.nodes[i]!.id !== b.nodes[i]!.id) return false;
+  }
+  for (let i = 0; i < a.edges.length; i++) {
+    const x = a.edges[i]!;
+    const y = b.edges[i]!;
+    if (
+      x.from !== y.from ||
+      x.to !== y.to ||
+      (x.type ?? false) !== (y.type ?? false) ||
+      (x.lazy ?? false) !== (y.lazy ?? false)
+    ) {
+      return false;
+    }
+  }
+  return true;
+}
 
-  const width = () => opts.svg.clientWidth || window.innerWidth;
-  const height = () => opts.svg.clientHeight || window.innerHeight;
+export function initGraph(opts: InitOptions): GraphController {
+  const { host, tooltip, onReadouts, onOpenSource, onNodeDetail } = opts;
+  const hostSel = d3.select<HTMLElement, unknown>(host);
+  const glCanvas = document.createElement("canvas");
+  const textCanvas = document.createElement("canvas");
+  for (const c of [glCanvas, textCanvas]) {
+    c.style.cssText = "position:absolute;inset:0;width:100%;height:100%;pointer-events:none";
+    host.append(c);
+  }
+  const scene = new Scene(glCanvas);
+  const ctx = textCanvas.getContext("2d")!;
+
+  const width = () => host.clientWidth || window.innerWidth;
+  const height = () => host.clientHeight || window.innerHeight;
+
+  // Current pan/zoom, and whether the user moved it since the last fresh
+  // layout (a settled layout only refits an untouched view).
+  let view = d3.zoomIdentity;
+  let userMoved = false;
+  let frame = 0;
+  const requestFrame = () => {
+    if (!frame) frame = requestAnimationFrame(draw);
+  };
+  // While the user is mid-zoom, the scene resamples its cached frame instead
+  // of re-rasterizing; a crisp frame follows once the gesture pauses.
+  let lastUserZoom = -Infinity;
+  let refine: ReturnType<typeof setTimeout> | undefined;
 
   const zoom = d3
-    .zoom<SVGSVGElement, unknown>()
+    .zoom<HTMLElement, unknown>()
     .scaleExtent([0.03, 8])
-    .on("zoom", (e) => root.attr("transform", e.transform.toString()));
-  svg.call(zoom);
+    .on("zoom", (e: d3.D3ZoomEvent<HTMLElement, unknown>) => {
+      if (e.sourceEvent) {
+        userMoved = true;
+        if (e.transform.k !== view.k) lastUserZoom = performance.now();
+      }
+      view = e.transform;
+      requestFrame();
+    });
 
   // Persistent controls (defaults mirror the prototype's initial panel state).
   let controls: Controls = {
@@ -382,20 +481,42 @@ export function initGraph(opts: InitOptions): GraphController {
     showLabels: false,
   };
 
-  // Current scene, rebuilt whenever the graph (vue vs vue+ts) changes.
-  let current: { nodes: RNode[]; links: RLink[]; maxHeight: number } | null = null;
-  let sim: d3.Simulation<RNode, RLink> | null = null;
-  let nodeSel: d3.Selection<SVGCircleElement, RNode, SVGGElement, unknown> | null = null;
-  let linkSel: d3.Selection<SVGLineElement, RLink, SVGGElement, unknown> | null = null;
-  let labelSel: d3.Selection<SVGTextElement, RNode, SVGGElement, unknown> | null = null;
-  let fileLabelSel: d3.Selection<SVGTextElement, RNode, SVGGElement, unknown> | null = null;
+  // Current scene, rebuilt whenever the topology changes.
+  let current: { graph: Graph; nodes: RNode[]; links: RLink[]; maxHeight: number } | null = null;
+  // Latest layout positions (x, y per node index) — owned by the worker's stream.
+  let pos: Float32Array = new Float32Array(0);
+  // Base node radius per index (LoC-scaled), and the drawn radius after
+  // filters/search (0 = hidden) that hit-testing and labels follow.
+  let radii = new Float32Array(0);
+  let drawR = new Float32Array(0);
+  let maxDrawR = 0;
+  // Per-node styling buffers, reused across repaints.
+  let nodeIndex = new Uint32Array(0);
+  let nodeGeom = new Float32Array(0);
+  let nodeColors = new Uint8Array(0);
+  // `.dim` per node (search or hover) — shared by the node pass and depth labels.
+  let nodeDim = new Uint8Array(0);
+  // Filename label per node (basename), built once per topology.
+  let labelText: string[] = [];
+  // Search hits per node, or null when no name/content search is active.
+  let searchHits: Uint8Array | null = null;
+  // A fresh layout fits the view once it settles.
+  let pendingFit = false;
+
+  // Drawn edges: hover incidence per edge, and per-node incident edge lists
+  // (CSR) so hover flips only the hovered node's edges.
+  let edgeHover = new Uint8Array(0);
+  let incidentStart = new Uint32Array(1);
+  let incidentList = new Uint32Array(0);
+
+  // Hit-testing index over the shown nodes; rebuilt lazily after moves/filters.
+  let pickTree: d3.Quadtree<number> | null = null;
+
   // Adjacency for hover (undirected), the import subtree ("down"/out) and the
   // supertree ("up"/inn). Rebuilt per graph; see ./select.ts for the contract.
   let ga: Adjacency = buildAdjacency([], []);
-  let nodeR: (n: RNode) => number = () => 6;
   // Driver-highlight rings: the selected driver and the per-node contribution
   // map that sets each ring's colour + opacity (null = no highlight).
-  let haloSel: d3.Selection<SVGCircleElement, RNode, SVGGElement, unknown> | null = null;
   let driver: MaintainabilityDriver | null = null;
   let contrib: MaintainabilityContributions | null = null;
   // Per-node change-cost breakdown for the detail panel (null until the score
@@ -404,6 +525,7 @@ export function initGraph(opts: InitOptions): GraphController {
   let breakdown: Record<string, MaintainabilityBreakdown> | null = null;
   let byId = new Map<string, RNode>();
   let hovered: RNode | null = null;
+  let dragging = false;
 
   // Server-shipped churn-blended volatility per node id — the exact number
   // the score charges per import, and therefore the visual weight of every
@@ -430,9 +552,21 @@ export function initGraph(opts: InitOptions): GraphController {
   // The on-screen subset — recomputed each refresh, reused by the blame rollup.
   let shownNodes: RNode[] = [];
 
+  const layout = new LayoutClient((positions, settled) => {
+    if (!current || positions.length !== current.nodes.length * 2) return;
+    pos = positions;
+    scene.setPositions(pos);
+    pickTree = null;
+    if (settled && pendingFit) {
+      pendingFit = false;
+      if (!userMoved) fitView();
+    }
+    requestFrame();
+  });
+
   const isGreen = (n: RNode): boolean =>
     controls.mode === "naive" ? n.errors === 0 : !n.strictRed;
-  const color = (n: RNode): string => (n.analyzing ? NEUTRAL : isGreen(n) ? GREEN : RED);
+  const fillOf = (n: RNode): Rgb => (n.analyzing ? NEUTRAL_RGB : isGreen(n) ? GREEN_RGB : RED_RGB);
 
   // only-red / only-green + node focus (ignores the depth filter); isHidden adds the depth filter.
   const hideBase = (d: RNode): boolean =>
@@ -442,22 +576,24 @@ export function initGraph(opts: InitOptions): GraphController {
   const isHidden = (d: RNode): boolean =>
     hideBase(d) || (depthFocus !== null && d.height !== depthFocus);
 
-  const linkId = (end: string | RNode): string => (typeof end === "string" ? end : end.id);
-
-  // Which link lines are worth drawing right now (see the body for the rules).
-  function visibleLinks(): RLink[] {
+  // Which links are worth drawing right now (link indices; see the body for the rules).
+  function visibleLinks(): number[] {
     if (!current) return [];
     // Default (no focus, links off): draw nothing. With a focus, restrict to
     // the focused set's internal edges; with "show links" or "highlight links"
     // on, every currently-shown edge.
     if (!controls.showLinks && !controls.highlightLinks && focus === null) return [];
     const inFocus = focus?.set ?? null;
-    return current.links.filter((l) => {
-      const s = l.source as RNode;
-      const t = l.target as RNode;
-      if (isHidden(s) || isHidden(t)) return false;
-      return inFocus === null || (inFocus.has(s.id) && inFocus.has(t.id));
-    });
+    const { nodes, links } = current;
+    const out: number[] = [];
+    for (let k = 0; k < links.length; k++) {
+      const s = nodes[links[k]!.s]!;
+      const t = nodes[links[k]!.t]!;
+      if (isHidden(s) || isHidden(t)) continue;
+      if (inFocus !== null && !(inFocus.has(s.id) && inFocus.has(t.id))) continue;
+      out.push(k);
+    }
+    return out;
   }
 
   // The visual weight of an edge is the exact number the score charges for it:
@@ -466,40 +602,54 @@ export function initGraph(opts: InitOptions): GraphController {
   // why. Opacity is the primary channel ("a stable import is nearly free"
   // renders as nearly invisible), width a secondary pop for heavy edges.
   const linkWeight = (l: RLink): number =>
-    l.type || l.lazy ? 0 : (volatility?.[linkId(l.target)] ?? 0);
-  const linkOpacity = (l: RLink): number => 0.1 + 0.65 * linkWeight(l);
+    l.type || l.lazy ? 0 : (volatility?.[current!.nodes[l.t]!.id] ?? 0);
 
-  // Bind link <line> elements to the visible subset and position them. Called
-  // whenever focus/filters change — the default (no focus) renders nothing, so
-  // the thousands of edges never hit the DOM until a node is selected.
-  // Base opacity/width are per-element attributes (NOT `.link` CSS): class
-  // rules override SVG presentation attributes, so `.hl`/`.dim` win naturally;
-  // `.hl` scales per edge through the `--hlo` custom property (higher floor so
-  // trace mode stays usable).
+  // Upload the visible edge set: endpoints, weight-derived width/opacity
+  // (highlighted opacity floored so trace mode stays usable), dash kind, and
+  // the per-node incidence lists hover uses.
   function renderLinks(): void {
-    linkSel = linkG
-      .selectAll<SVGLineElement, RLink>("line")
-      .data(visibleLinks(), (l) => `${linkId(l.source)}\n${linkId(l.target)}`)
-      .join("line")
-      .attr("class", (l) => linkClass(l))
-      .attr("stroke-opacity", (l) => linkOpacity(l).toFixed(3))
-      .attr("stroke-width", (l) => (0.6 + 1.2 * linkWeight(l)).toFixed(2))
-      .style("--hlo", (l) => Math.max(0.35, linkOpacity(l)).toFixed(3));
-    // Position each edge; x/y attrs land on the same selection.
-    linkSel
-      .attr("x1", (d) => (d.source as RNode).x!)
-      .attr("y1", (d) => (d.source as RNode).y!)
-      .attr("x2", (d) => (d.target as RNode).x!)
-      .attr("y2", (d) => (d.target as RNode).y!);
+    if (!current) return;
+    const { nodes, links } = current;
+    const vis = visibleLinks();
+    const m = vis.length;
+    const ends = new Uint32Array(m * 2);
+    const style = new Float32Array(m * EDGE_STYLE);
+    const dash = new Uint8Array(m);
+    edgeHover = new Uint8Array(m);
+    incidentStart = new Uint32Array(nodes.length + 1);
+    for (let k = 0; k < m; k++) {
+      const l = links[vis[k]!]!;
+      const w = linkWeight(l);
+      const opacity = 0.1 + 0.65 * w;
+      ends[k * 2] = l.s;
+      ends[k * 2 + 1] = l.t;
+      style[k * EDGE_STYLE] = 0.6 + 1.2 * w;
+      style[k * EDGE_STYLE + 1] = opacity;
+      style[k * EDGE_STYLE + 2] = Math.max(0.35, opacity);
+      // `.link.lazy` is declared after `.link.type`, so lazy's dash wins.
+      dash[k] = l.lazy ? 2 : l.type ? 1 : 0;
+      incidentStart[l.s + 1]!++;
+      incidentStart[l.t + 1]!++;
+    }
+    for (let i = 0; i < nodes.length; i++) incidentStart[i + 1]! += incidentStart[i]!;
+    incidentList = new Uint32Array(m * 2);
+    const fill = incidentStart.slice(0, nodes.length);
+    for (let k = 0; k < m; k++) {
+      incidentList[fill[ends[k * 2]!]!++] = k;
+      incidentList[fill[ends[k * 2 + 1]!]!++] = k;
+    }
+    if (hovered) markIncident(hovered.index, 1);
+    scene.setEdges({ ends, style, dash, count: m });
+    scene.setEdgeHover(edgeHover);
+    scene.setEdgeMode(hovered !== null, controls.highlightLinks);
+    requestFrame();
   }
 
-  // Base class for the link overlay: hover-blue when "highlight links" is on,
-  // otherwise the muted default; type-only edges add `.type` (dashed), lazy
-  // edges `.lazy` (a distinct dash). Hover then toggles `.hl`/`.dim` on top.
-  function linkClass(l: RLink): string {
-    return `${controls.highlightLinks ? "link hl" : "link"}${l.type ? " type" : ""}${
-      l.lazy ? " lazy" : ""
-    }`;
+  // Flag (1) or clear (0) the hover incidence of node `i`'s drawn edges.
+  function markIncident(i: number, flag: number): void {
+    for (let j = incidentStart[i]!; j < incidentStart[i + 1]!; j++) {
+      edgeHover[incidentList[j]!] = flag;
+    }
   }
 
   // The tooltip is now a terse summary: filename, LOC, and the import links in
@@ -719,8 +869,7 @@ export function initGraph(opts: InitOptions): GraphController {
   // Recolour + recompute every mode-dependent readout. No relayout — this is
   // what the colour-mode / only-red / depth toggles call.
   function refresh(): void {
-    if (!current || !nodeSel || !linkSel || !labelSel || !fileLabelSel) return;
-    nodeSel.attr("fill", color);
+    if (!current) return;
 
     shownNodes = current.nodes.filter((d) => !isHidden(d));
     const shownIds = new Set(shownNodes.map((n) => n.id));
@@ -782,96 +931,341 @@ export function initGraph(opts: InitOptions): GraphController {
     applyControls();
   }
 
-  // Reapply the persistent view controls to the freshly-built selections.
+  // Reapply the persistent view controls: visibility, search, links, halos.
   function applyControls(): void {
-    if (!nodeSel || !linkSel || !labelSel || !fileLabelSel) return;
-    labelG.attr("display", controls.showRings ? null : "none");
-    fileLabelG.attr("display", controls.showLabels ? null : "none");
-    nodeSel.style("display", (d) => (isHidden(d) ? "none" : null));
-    // The focused root (set by a node click or a hotspot-row click) gets a
-    // subtle glow so it's findable among its isolated dependents/subtree.
-    nodeSel.classed("focus-root", (d) => focus !== null && d.id === focus.root);
-    labelSel.style("display", (d) => (isHidden(d) ? "none" : null));
-    fileLabelSel.style("display", (d) => (isHidden(d) ? "none" : null));
+    computeSearchHits();
+    paintNodes();
     renderLinks();
-    applySearch();
     renderHalos();
   }
 
   // Driver-highlight rings: a coloured ring around each node — a translucent
   // disc behind it (so only the annulus past the node shows) plus a crisp
   // stroke, both at an opacity driven by the node's normalised contribution to
-  // the selected driver (with a floor so faint contributors stay visible). One
-  // circle per node (far cheaper than per-node drop-shadow filters); hidden
-  // entirely when no driver is selected or the contribution is negligible.
+  // the selected driver (with a floor so faint contributors stay visible).
+  // Hidden when no driver is selected or the contribution is negligible. The
+  // focused root (node click or hotspot-row click) gets a soft white glow in
+  // the same pass so it's findable among its isolated dependents/subtree.
   function renderHalos(): void {
-    if (!haloSel || !nodeSel) return;
-    if (driver === null || contrib === null) {
-      haloSel.attr("display", "none");
+    if (!current) return;
+    const cap = current.nodes.length + 1;
+    const index = new Uint32Array(cap);
+    const geom = new Float32Array(cap * DISC_GEOM);
+    const colors = new Uint8Array(cap * DISC_COLORS);
+    let count = 0;
+    const push = (
+      i: number,
+      r: number,
+      sw: number,
+      soft: number,
+      col: Rgb,
+      fa: number,
+      sa: number,
+    ) => {
+      index[count] = i;
+      geom.set([r, sw, soft], count * DISC_GEOM);
+      const fill = Math.round(fa * 255);
+      const stroke = Math.round(sa * 255);
+      colors.set(
+        [col[0], col[1], col[2], fill, col[0], col[1], col[2], stroke],
+        count * DISC_COLORS,
+      );
+      count++;
+    };
+    if (driver !== null && contrib !== null) {
+      const key = driver;
+      const data = contrib;
+      // Change blast rings are red for contrast (purple reads poorly on the dark
+      // canvas); the panel/legend keeps blast purple to stay distinct from types.
+      const col = rgb(key === "blast" ? RED : DRIVER_COLOR[key]);
+      for (const d of current.nodes) {
+        const v = data[d.id]?.[key] ?? 0;
+        if (v < HALO_EPS || isHidden(d)) continue;
+        push(
+          d.index,
+          radii[d.index]! + HALO_OFFSET,
+          HALO_STROKE,
+          0,
+          col,
+          v * 0.5,
+          Math.max(0.3, v),
+        );
+      }
+    }
+    // The glow stands in for the old node drop-shadow, so it dims with its node.
+    const root = focus ? byId.get(focus.root) : undefined;
+    if (root && !isHidden(root)) {
+      const a = 0.55 * (nodeDim[root.index] ? DIM : 1);
+      push(root.index, radii[root.index]!, 0, 6, WHITE_RGB, a, 0);
+    }
+    scene.setHalos({ index, geom, colors, count });
+    requestFrame();
+  }
+
+  // Two independent filters, ANDed: the name/id query and the content-search
+  // set. A node is a hit only when it passes both active filters.
+  function computeSearchHits(): void {
+    if (!current) return;
+    const q = controls.search.trim().toLowerCase();
+    const cm = controls.contentMatches;
+    if (!q && cm === null) {
+      searchHits = null;
       return;
     }
-    const key = driver;
-    const data = contrib;
-    // Change blast rings are red for contrast (purple reads poorly on the dark
-    // canvas); the panel/legend keeps blast purple to stay distinct from types.
-    const col = key === "blast" ? RED : DRIVER_COLOR[key];
-    const intensity = (d: RNode) => data[d.id]?.[key] ?? 0;
-    haloSel
-      .attr("display", (d) => (intensity(d) >= HALO_EPS && !isHidden(d) ? null : "none"))
-      .attr("cx", (d) => d.x!)
-      .attr("cy", (d) => d.y!)
-      .attr("r", (d) => nodeR(d) + HALO_OFFSET)
-      .attr("fill", col)
-      .attr("fill-opacity", (d) => intensity(d) * 0.5)
-      .attr("stroke", col)
-      .attr("stroke-width", HALO_STROKE)
-      .attr("stroke-opacity", (d) => Math.max(0.3, intensity(d)));
+    searchHits = new Uint8Array(current.nodes.length);
+    for (const d of current.nodes) {
+      const nameHit = !q || d.name.toLowerCase().includes(q) || d.id.toLowerCase().includes(q);
+      searchHits[d.index] = nameHit && (cm === null || cm.has(d.file)) ? 1 : 0;
+    }
   }
 
   function applySearch(): void {
-    if (!nodeSel || !labelSel) return;
-    const q = controls.search.trim().toLowerCase();
-    const cm = controls.contentMatches;
-    // Two independent filters, ANDed: the name/id query and the content-search
-    // set. A node is a hit only when it passes both active filters.
-    const nameHit = (d: RNode) =>
-      !q || d.name.toLowerCase().includes(q) || d.id.toLowerCase().includes(q);
-    const contentHit = (d: RNode) => cm === null || cm.has(d.file);
-    const hit = (d: RNode) => nameHit(d) && contentHit(d);
-    if (!q && cm === null) {
-      nodeSel.classed("dim", false).attr("r", (d) => nodeR(d));
-      labelSel.classed("dim", false);
-      fileLabelSel?.classed("dim", false);
-      return;
-    }
-    nodeSel.classed("dim", (d) => !hit(d)).attr("r", (d) => (hit(d) ? nodeR(d) + 4 : nodeR(d)));
-    labelSel.classed("dim", (d) => !hit(d));
-    fileLabelSel?.classed("dim", (d) => !hit(d));
+    computeSearchHits();
+    paintNodes();
   }
 
-  function setGraph(graph: Graph): void {
-    // Ids/depths are graph-specific — a graph switch drops any focus.
-    focus = null;
-    depthFocus = null;
-    if (sim) sim.stop();
+  // Rebuild the node instances: fill by status, TS-blue stroke for modules,
+  // `.dim` (an active search owns dimming; otherwise hover dims everything
+  // outside the hovered neighbourhood), search hits grown by 4, hidden nodes
+  // collapsed to radius 0.
+  function paintNodes(): void {
+    if (!current) return;
+    const nbr = hovered && !searchHits ? ga.adj.get(hovered.id)! : null;
+    maxDrawR = 0;
+    for (const d of current.nodes) {
+      const i = d.index;
+      const hit = searchHits ? searchHits[i] === 1 : false;
+      const dim = searchHits ? !hit : nbr !== null && d !== hovered && !nbr.has(d.id);
+      nodeDim[i] = dim ? 1 : 0;
+      const r = isHidden(d) ? 0 : radii[i]! + (hit ? 4 : 0);
+      drawR[i] = r;
+      if (r > maxDrawR) maxDrawR = r;
+      const ts = d.kind === "ts";
+      nodeGeom[i * DISC_GEOM] = r;
+      nodeGeom[i * DISC_GEOM + 1] = ts ? 1.2 : 0.6;
+      const a = Math.round((dim ? DIM : 1) * 255);
+      const fill = fillOf(d);
+      const stroke = ts ? TS_STROKE_RGB : NODE_STROKE_RGB;
+      nodeColors.set(
+        [fill[0], fill[1], fill[2], a, stroke[0], stroke[1], stroke[2], a],
+        i * DISC_COLORS,
+      );
+    }
+    scene.setNodes({
+      index: nodeIndex,
+      geom: nodeGeom,
+      colors: nodeColors,
+      count: current.nodes.length,
+    });
+    pickTree = null;
+    // The focus glow follows its node's dimming.
+    if (focus) renderHalos();
+    requestFrame();
+  }
 
-    const nodes = graph.nodes.map(toRNode);
-    const links: RLink[] = graph.edges.map((e) => ({
-      source: e.from,
-      target: e.to,
-      type: e.type ?? false,
-      lazy: e.lazy ?? false,
-    }));
-    const maxHeight = graph.maxHeight;
-    current = { nodes, links, maxHeight };
+  function draw(): void {
+    frame = 0;
+    const crisp = scene.render(view, performance.now() - lastUserZoom < ZOOM_SETTLE_MS);
+    if (!crisp) {
+      clearTimeout(refine);
+      refine = setTimeout(requestFrame, ZOOM_SETTLE_MS);
+    }
+    drawLabels();
+  }
 
-    const radiusOf = (h: number) => (maxHeight - h) * RING + 40;
+  // Text overlay: filename labels (`showLabels`) and depth numbers inside the
+  // nodes (`showRings`), in user units like the old SVG text. Glyphs are laid
+  // out at FONT_UNIT and scaled per label; off-screen and sub-legible labels
+  // are skipped, so cost tracks what is actually readable.
+  function drawLabels(): void {
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    ctx.clearRect(0, 0, textCanvas.width, textCanvas.height);
+    if (!current || (!controls.showLabels && !controls.showRings)) return;
+    const dpr = window.devicePixelRatio || 1;
+    const w = width();
+    const h = height();
+    const k = view.k;
+    const nodes = current.nodes;
+    ctx.textAlign = "center";
+    ctx.textBaseline = "alphabetic";
+    const place = (sx: number, sy: number, px: number) =>
+      ctx.setTransform((dpr * px) / FONT_UNIT, 0, 0, (dpr * px) / FONT_UNIT, dpr * sx, dpr * sy);
+    if (controls.showLabels && FILE_FONT * k >= MIN_LABEL_PX) {
+      ctx.font = `600 ${FONT_UNIT}px ui-monospace, monospace`;
+      ctx.fillStyle = "#c9d1d9";
+      ctx.strokeStyle = "#05080d";
+      ctx.lineWidth = 0.18 * FONT_UNIT;
+      for (const d of nodes) {
+        const i = d.index;
+        if (drawR[i] === 0) continue;
+        const sx = view.applyX(pos[i * 2]!);
+        const sy = view.applyY(pos[i * 2 + 1]! - radii[i]! - 2);
+        if (sx < -200 || sx > w + 200 || sy < -20 || sy > h + 20) continue;
+        ctx.globalAlpha = searchHits && !searchHits[i] ? DIM : 1;
+        place(sx, sy, FILE_FONT * k);
+        ctx.strokeText(labelText[i]!, 0, 0);
+        ctx.fillText(labelText[i]!, 0, 0);
+      }
+    }
+    if (controls.showRings) {
+      ctx.font = `700 ${FONT_UNIT}px ui-monospace, monospace`;
+      ctx.fillStyle = "#05080d";
+      for (const d of nodes) {
+        const i = d.index;
+        const px = radii[i]! * 1.35 * k;
+        if (drawR[i] === 0 || px < MIN_LABEL_PX) continue;
+        const sx = view.applyX(pos[i * 2]!);
+        const sy = view.applyY(pos[i * 2 + 1]!);
+        if (sx < -px || sx > w + px || sy < -px || sy > h + px) continue;
+        ctx.globalAlpha = nodeDim[i] ? DIM : 1;
+        place(sx, sy, px);
+        ctx.fillText(String(d.height), 0, 0.34 * FONT_UNIT);
+      }
+    }
+    ctx.globalAlpha = 1;
+  }
+
+  // Topmost shown node under a CSS-pixel point (later instances draw on top).
+  function pick(px: number, py: number): RNode | null {
+    if (!current) return null;
+    if (!pickTree) {
+      const shown: number[] = [];
+      for (let i = 0; i < drawR.length; i++) if (drawR[i]! > 0) shown.push(i);
+      pickTree = d3
+        .quadtree<number>()
+        .x((i) => pos[i * 2]!)
+        .y((i) => pos[i * 2 + 1]!)
+        .addAll(shown);
+    }
+    const [ux, uy] = view.invert([px, py]);
+    const reach = maxDrawR;
+    let best = -1;
+    pickTree.visit((q, x0, y0, x1, y1) => {
+      if (!q.length) {
+        let leaf: d3.QuadtreeLeaf<number> | undefined = q as d3.QuadtreeLeaf<number>;
+        do {
+          const i = leaf.data;
+          const dx = pos[i * 2]! - ux;
+          const dy = pos[i * 2 + 1]! - uy;
+          if (dx * dx + dy * dy <= drawR[i]! ** 2 && i > best) best = i;
+          leaf = leaf.next;
+        } while (leaf);
+        return true;
+      }
+      return x0 > ux + reach || x1 < ux - reach || y0 > uy + reach || y1 < uy - reach;
+    });
+    return best < 0 ? null : current.nodes[best]!;
+  }
+
+  function fitView(): void {
+    if (!current) return;
+    const pts = current.nodes.map((d) => ({ x: pos[d.index * 2]!, y: pos[d.index * 2 + 1]! }));
+    zoom.transform(hostSel, fitTransform(pts, width(), height()));
+  }
+
+  // LoC-scaled node radii; returns whether any radius changed.
+  function updateRadii(nodes: RNode[]): boolean {
     const sizes = nodes.map((n) => n.size);
     const rScale = d3
       .scaleSqrt()
       .domain([d3.min(sizes) ?? 1, d3.max(sizes) ?? 1])
       .range([5, 24]);
-    nodeR = (n: RNode) => rScale(n.size);
+    let changed = radii.length !== nodes.length;
+    if (changed) radii = new Float32Array(nodes.length);
+    for (const n of nodes) {
+      const r = Math.fround(rScale(n.size));
+      if (radii[n.index] !== r) {
+        radii[n.index] = r;
+        changed = true;
+      }
+    }
+    return changed;
+  }
+
+  // Collision radius per node: the drawn radius plus a 2-unit gap.
+  function collideRadii(): Float32Array {
+    return radii.map((r) => r + 2);
+  }
+
+  function moveTooltip(e: MouseEvent): void {
+    tooltip.style.left = `${e.clientX + 14}px`;
+    tooltip.style.top = `${e.clientY + 14}px`;
+  }
+
+  function hoverOver(d: RNode, e: MouseEvent): void {
+    hovered = d;
+    markIncident(d.index, 1);
+    scene.setEdgeHover(edgeHover);
+    scene.setEdgeMode(true, controls.highlightLinks);
+    // Hover dims outside the neighbourhood unless a search owns the dimming.
+    paintNodes();
+    host.style.cursor = "pointer";
+    tooltip.innerHTML = tooltipHtml(d);
+    tooltip.style.opacity = "1";
+    moveTooltip(e);
+    emitDetail();
+  }
+
+  function hoverOut(): void {
+    if (!hovered) return;
+    markIncident(hovered.index, 0);
+    hovered = null;
+    scene.setEdgeHover(edgeHover);
+    // Restore the baseline: every edge blue when "highlight links" is on,
+    // otherwise no hover emphasis; the search baseline owns node dimming.
+    scene.setEdgeMode(false, controls.highlightLinks);
+    paintNodes();
+    host.style.cursor = "";
+    tooltip.style.opacity = "0";
+    // Fall back to the selected node's detail (or clear the panel).
+    emitDetail();
+  }
+
+  function setGraph(graph: Graph): void {
+    if (current && sameTopology(current.graph, graph)) patchGraph(graph);
+    else buildGraph(graph);
+  }
+
+  // Progressive analysis facts on an unchanged topology: restyle in place —
+  // layout, zoom, focus and hover survive. Only changed node sizes reach the
+  // layout (new collide radii, gently reheated).
+  function patchGraph(graph: Graph): void {
+    const c = current!;
+    c.graph = graph;
+    graph.nodes.forEach((wire, i) => {
+      const node = c.nodes[i]!;
+      const { _sx, _sy } = node;
+      Object.assign(node, toRNode(wire, i), { _sx, _sy });
+    });
+    if (updateRadii(c.nodes)) layout.radii(collideRadii(), 0.1);
+    refresh();
+    emitDetail();
+  }
+
+  function buildGraph(graph: Graph): void {
+    // Ids/depths are graph-specific — a graph switch drops any focus.
+    hoverOut();
+    focus = null;
+    depthFocus = null;
+    const prev = current ? { pos, byId } : null;
+
+    const nodes = graph.nodes.map(toRNode);
+    const indexOf = new Map(nodes.map((d) => [d.id, d.index]));
+    const at = (id: string): number => {
+      const i = indexOf.get(id);
+      if (i === undefined) throw new Error(`node not found: ${id}`);
+      return i;
+    };
+    const links: RLink[] = graph.edges.map((e) => ({
+      s: at(e.from),
+      t: at(e.to),
+      type: e.type ?? false,
+      lazy: e.lazy ?? false,
+    }));
+    const maxHeight = graph.maxHeight;
+    current = { graph, nodes, links, maxHeight };
+    const radiusOf = (h: number) => (maxHeight - h) * RING + 40;
+    updateRadii(nodes);
 
     // Deterministic angular seeding by folder wedge on each height ring.
     const groups = [...new Set(nodes.map((n) => n.group))].sort();
@@ -886,198 +1280,94 @@ export function initGraph(opts: InitOptions): GraphController {
         const a = start + (wedge * (i + 0.5)) / members.length;
         n._sx = Math.cos(a) * radiusOf(n.height);
         n._sy = Math.sin(a) * radiusOf(n.height);
-        n.x = n._sx;
-        n.y = n._sy;
       });
       acc += members.length;
     }
 
-    ringG.selectAll("*").remove();
-    linkG.selectAll("*").remove();
-    nodeG.selectAll("*").remove();
-    labelG.selectAll("*").remove();
-    fileLabelG.selectAll("*").remove();
-    haloG.selectAll("*").remove();
+    // Start from the previous layout when the topology barely moved (nodes
+    // kept on their ring); otherwise from the seeds with a full settle.
+    const n = nodes.length;
+    pos = new Float32Array(n * 2);
+    let kept = 0;
+    for (const d of nodes) {
+      const old = prev?.byId.get(d.id);
+      const reuse = prev !== null && old !== undefined && old.height === d.height;
+      pos[d.index * 2] = reuse ? prev.pos[old.index * 2]! : d._sx;
+      pos[d.index * 2 + 1] = reuse ? prev.pos[old.index * 2 + 1]! : d._sy;
+      if (reuse) kept++;
+    }
+    const warm = n > 0 && kept >= WARM_SHARE * n;
+    const input = new Float32Array(n * INPUT_STRIDE);
+    for (const d of nodes) {
+      const i = d.index;
+      input.set(
+        [pos[i * 2]!, pos[i * 2 + 1]!, d._sx, d._sy, radiusOf(d.height), radii[i]! + 2],
+        i * INPUT_STRIDE,
+      );
+    }
+    const pairs = new Uint32Array(links.length * 2);
+    links.forEach((l, k) => {
+      pairs[k * 2] = l.s;
+      pairs[k * 2 + 1] = l.t;
+    });
+    layout.load(input, pairs, warm ? 0.3 : 1, warm ? 0 : PRETICKS);
 
-    ringG
-      .selectAll<SVGCircleElement, number>("circle")
-      .data(d3.range(0, maxHeight + 1))
-      .join("circle")
-      .attr("class", "ring")
-      .attr("r", (h) => radiusOf(h));
-
-    // Links are not rendered by default (performance): with thousands of edges,
-    // keeping every <line> in the DOM is the dominant cost. renderLinks() binds
-    // only the focused node's subtree edges; the simulation below still uses the
-    // full `links` array for layout, so positions are unchanged.
-    linkSel = linkG.selectAll<SVGLineElement, RLink>("line");
-
-    const drag = d3
-      .drag<SVGCircleElement, RNode>()
-      .on("start", (e, d) => {
-        if (!e.active) sim?.alphaTarget(0.15).restart();
-        d.fx = d.x;
-        d.fy = d.y;
-      })
-      .on("drag", (e, d) => {
-        d.fx = e.x;
-        d.fy = e.y;
-      })
-      .on("end", (e, d) => {
-        if (!e.active) sim?.alphaTarget(0);
-        d.fx = null;
-        d.fy = null;
-      });
-
-    nodeSel = nodeG
-      .selectAll<SVGCircleElement, RNode>("circle")
-      .data(nodes)
-      .join("circle")
-      .attr("class", (d) => (d.kind === "ts" ? "node ts" : "node"))
-      .attr("r", (d) => nodeR(d))
-      .attr("fill", color)
-      .call(drag);
-
-    haloSel = haloG
-      .selectAll<SVGCircleElement, RNode>("circle")
-      .data(nodes)
-      .join("circle")
-      .attr("class", "halo")
-      .attr("display", "none");
-
-    labelSel = labelG
-      .selectAll<SVGTextElement, RNode>("text")
-      .data(nodes)
-      .join("text")
-      .attr("class", "rlabel")
-      .attr("text-anchor", "middle")
-      .attr("dy", ".34em")
-      .attr("font-size", (d) => (nodeR(d) * 1.35).toFixed(1))
-      .text((d) => d.height);
-
-    fileLabelSel = fileLabelG
-      .selectAll<SVGTextElement, RNode>("text")
-      .data(nodes)
-      .join("text")
-      .attr("class", "flabel")
-      .attr("text-anchor", "middle")
-      .text((d) => baseOf(d.file));
-
-    const tick = () => {
-      linkSel!
-        .attr("x1", (d) => (d.source as RNode).x!)
-        .attr("y1", (d) => (d.source as RNode).y!)
-        .attr("x2", (d) => (d.target as RNode).x!)
-        .attr("y2", (d) => (d.target as RNode).y!);
-      nodeSel!.attr("cx", (d) => d.x!).attr("cy", (d) => d.y!);
-      labelSel!.attr("x", (d) => d.x!).attr("y", (d) => d.y!);
-      fileLabelSel!.attr("x", (d) => d.x!).attr("y", (d) => d.y! - nodeR(d) - 2);
-      if (driver !== null) haloSel!.attr("cx", (d) => d.x!).attr("cy", (d) => d.y!);
-    };
-
-    sim = d3
-      .forceSimulation<RNode, RLink>(nodes)
-      .force(
-        "link",
-        d3
-          .forceLink<RNode, RLink>(links)
-          .id((d) => d.id)
-          .distance(24)
-          .strength(0.04),
-      )
-      .force("charge", d3.forceManyBody<RNode>().strength(-10).distanceMax(180))
-      .force("r", d3.forceRadial<RNode>((d) => radiusOf(d.height), 0, 0).strength(1))
-      .force("ax", d3.forceX<RNode>((d) => d._sx).strength(0.06))
-      .force("ay", d3.forceY<RNode>((d) => d._sy).strength(0.06))
-      .force(
-        "collide",
-        d3
-          .forceCollide<RNode>((d) => nodeR(d) + 2)
-          .strength(1)
-          .iterations(2),
-      )
-      .on("tick", tick)
-      .stop();
-    for (let i = 0; i < PRETICKS; i++) sim.tick();
-    tick();
-
-    // Fit the settled bounding box into the viewport (empty graph => identity).
-    const fit = fitTransform(nodes, width(), height());
-    svg.call((s) => zoom.transform(s, fit));
-
+    byId = new Map(nodes.map((d) => [d.id, d]));
     ga = buildAdjacency(
-      nodes.map((n) => n.id),
-      links.map((l) => ({ source: linkId(l.source), target: linkId(l.target) })),
+      nodes.map((d) => d.id),
+      links.map((l) => ({ source: nodes[l.s]!.id, target: nodes[l.t]!.id })),
     );
-    byId = new Map(nodes.map((node) => [node.id, node]));
+    labelText = nodes.map((d) => baseOf(d.file));
+    drawR = new Float32Array(n);
+    nodeDim = new Uint8Array(n);
+    nodeIndex = Uint32Array.from(nodes, (d) => d.index);
+    nodeGeom = new Float32Array(n * DISC_GEOM);
+    nodeColors = new Uint8Array(n * DISC_COLORS);
 
-    nodeSel
-      .on("click", (e: MouseEvent, d) => {
-        e.stopPropagation();
-        // Ctrl/Cmd-click opens the file's source. Otherwise isolate: shift-click
-        // isolates the supertree (everything that depends on this node — what
-        // breaks if it changes), a plain click isolates the import subtree.
-        // Re-clicking the same node in the same direction clears it.
-        if (e.ctrlKey || e.metaKey) {
-          onOpenSource({ id: d.id, file: d.file });
-          return;
-        }
-        isolate(d.id, e.shiftKey ? "up" : "down");
-      })
-      .on("mouseover", (e: MouseEvent, d) => {
-        const nbr = ga.adj.get(d.id)!;
-        // While a search is active it owns the node/label dimming — hover must
-        // not reveal filtered-out nodes, so only the link highlight + tooltip
-        // react. Without a search, hover dims everything outside the neighbourhood.
-        if (!controls.search.trim() && controls.contentMatches === null) {
-          nodeSel!.classed("dim", (o) => o !== d && !nbr.has(o.id));
-          labelSel!.classed("dim", (o) => o !== d && !nbr.has(o.id));
-        }
-        linkSel!
-          .classed("hl", (l) => l.source === d || l.target === d)
-          .classed("dim", (l) => l.source !== d && l.target !== d);
-        hovered = d;
-        tooltip.innerHTML = tooltipHtml(d);
-        tooltip.style.opacity = "1";
-        emitDetail();
-      })
-      .on("mousemove", (e: MouseEvent) => {
-        tooltip.style.left = `${e.clientX + 14}px`;
-        tooltip.style.top = `${e.clientY + 14}px`;
-      })
-      .on("mouseout", () => {
-        hovered = null;
-        // Restore the baseline: keep every edge blue when "highlight links" is
-        // on, otherwise clear the hover emphasis entirely.
-        linkSel!.classed("hl", controls.highlightLinks).classed("dim", false);
-        // Restore the search baseline (clears dimming when no search is active).
-        applySearch();
-        tooltip.style.opacity = "0";
-        // Fall back to the selected node's detail (or clear the panel).
-        emitDetail();
-      });
+    const rings = maxHeight + 1;
+    const ringGeom = new Float32Array(rings * DISC_GEOM);
+    const ringColors = new Uint8Array(rings * DISC_COLORS);
+    for (let h = 0; h < rings; h++) {
+      ringGeom.set([radiusOf(h), 1, 0], h * DISC_GEOM);
+      ringColors.set([0, 0, 0, 0, RING_RGB[0], RING_RGB[1], RING_RGB[2], 255], h * DISC_COLORS);
+    }
+    scene.setRings({
+      index: new Uint32Array(rings),
+      geom: ringGeom,
+      colors: ringColors,
+      count: rings,
+    });
+    scene.setPositions(pos);
+    pickTree = null;
+
+    // Fit the seeds now, and the settled layout once the worker finishes
+    // (unless the user has panned/zoomed by then).
+    if (!warm) {
+      userMoved = false;
+      pendingFit = true;
+      fitView();
+    }
 
     refresh();
-    // A rebuilt graph drops focus/hover; sync the panel to the empty state.
-    hovered = null;
     emitDetail();
   }
 
-  // Click empty space to clear node + depth focus.
-  svg.on("click", () => {
-    if (focus !== null || depthFocus !== null) {
-      focus = null;
-      depthFocus = null;
-      refresh();
-    }
-    emitDetail();
-  });
-
+  // Each control only redoes its own work: filters recompute readouts and
+  // visibility, search restyles nodes, link toggles rebuild edges, label
+  // toggles just redraw.
   function setControls(next: Controls): void {
+    const prev = controls;
     controls = next;
-    refresh();
+    const changed = (keys: (keyof Controls)[]) => keys.some((k) => prev[k] !== next[k]);
+    if (changed(["mode", "onlyRed", "onlyGreen", "blameGreen", "blameRed"])) {
+      refresh();
+    } else {
+      if (changed(["search", "contentMatches"])) applySearch();
+      if (changed(["showLinks", "highlightLinks"])) renderLinks();
+      if (changed(["showRings", "showLabels"])) requestFrame();
+    }
     // Colour mode changes the shown node's status line.
-    emitDetail();
+    if (prev.mode !== next.mode) emitDetail();
   }
 
   function toggleDepth(h: number): void {
@@ -1161,11 +1451,94 @@ export function initGraph(opts: InitOptions): GraphController {
     emitDetail();
   }
 
+  const drag = d3
+    .drag<HTMLElement, unknown, DragSubject | null>()
+    .container(host)
+    .subject((e: { x: number; y: number }) => {
+      const d = pick(e.x, e.y);
+      if (!d) return null;
+      const i = d.index;
+      return { index: i, x: view.applyX(pos[i * 2]!), y: view.applyY(pos[i * 2 + 1]!) };
+    })
+    .on("start", (e: d3.D3DragEvent<HTMLElement, unknown, DragSubject>) => {
+      dragging = true;
+      const i = e.subject.index;
+      layout.drag("start", i, pos[i * 2]!, pos[i * 2 + 1]!);
+    })
+    .on("drag", (e: d3.D3DragEvent<HTMLElement, unknown, DragSubject>) => {
+      const i = e.subject.index;
+      const [x, y] = view.invert([e.x, e.y]);
+      pos[i * 2] = x;
+      pos[i * 2 + 1] = y;
+      scene.setPositions(pos);
+      pickTree = null;
+      requestFrame();
+      layout.drag("move", i, x, y);
+    })
+    .on("end", (e: d3.D3DragEvent<HTMLElement, unknown, DragSubject>) => {
+      dragging = false;
+      layout.drag("end", e.subject.index, 0, 0);
+    });
+  // Drag first: a press on a node starts a drag and stops the zoom's pan.
+  hostSel.call(drag).call(zoom);
+
+  const onPointerMove = (e: PointerEvent) => {
+    if (hovered) moveTooltip(e);
+    if (dragging || e.buttons) return;
+    const [px, py] = d3.pointer(e, host);
+    const d = pick(px, py);
+    if (d === hovered) return;
+    hoverOut();
+    if (d) hoverOver(d, e);
+  };
+  const onPointerLeave = () => hoverOut();
+  // Ctrl/Cmd-click opens the file's source. Otherwise isolate: shift-click
+  // isolates the supertree (everything that depends on this node — what
+  // breaks if it changes), a plain click the import subtree; re-clicking the
+  // same node in the same direction clears it. Empty space clears node +
+  // depth focus. (Drag and pan suppress the click that ends them.)
+  const onClick = (e: MouseEvent) => {
+    const [px, py] = d3.pointer(e, host);
+    const d = pick(px, py);
+    if (d) {
+      if (e.ctrlKey || e.metaKey) onOpenSource({ id: d.id, file: d.file });
+      else isolate(d.id, e.shiftKey ? "up" : "down");
+      return;
+    }
+    if (focus !== null || depthFocus !== null) {
+      focus = null;
+      depthFocus = null;
+      refresh();
+    }
+    emitDetail();
+  };
+  host.addEventListener("pointermove", onPointerMove);
+  host.addEventListener("pointerleave", onPointerLeave);
+  host.addEventListener("click", onClick);
+
+  const resize = () => {
+    const dpr = window.devicePixelRatio || 1;
+    scene.resize(width(), height(), dpr);
+    textCanvas.width = Math.round(width() * dpr);
+    textCanvas.height = Math.round(height() * dpr);
+    requestFrame();
+  };
+  const observer = new ResizeObserver(resize);
+  observer.observe(host);
+  resize();
+
   function destroy(): void {
-    if (sim) sim.stop();
-    svg.on(".zoom", null);
-    svg.on("click", null);
-    root.remove();
+    layout.destroy();
+    cancelAnimationFrame(frame);
+    clearTimeout(refine);
+    observer.disconnect();
+    hostSel.on(".zoom", null).on(".drag", null);
+    host.removeEventListener("pointermove", onPointerMove);
+    host.removeEventListener("pointerleave", onPointerLeave);
+    host.removeEventListener("click", onClick);
+    scene.destroy();
+    glCanvas.remove();
+    textCanvas.remove();
     tooltip.style.opacity = "0";
   }
 

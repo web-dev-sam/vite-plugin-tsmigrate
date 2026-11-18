@@ -9,3 +9,6 @@ tmp/
 
 # Local-only mid-migration test fixture (see playground-migrating/generate.mjs)
 playground-migrating
+
+# Rust layout crate build output (tool/layout; the tool imports the .wasm from here)
+tool/layout/target
