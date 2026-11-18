@@ -76,6 +76,54 @@ tsmigrate({
 });
 ```
 
+### Experimental: TypeScript 7.1 checker
+
+The tool's **type check** toggle (in settings), or `experimentalTs7: true`,
+replaces `typeCheckCommand` with the TypeScript 7.1 beta API. Vue's content
+mapper converts `.vue` files into code TypeScript can check. One TypeScript
+process stays up for the lifetime of the dev server and re-checks every file
+after each change. This mode **runs external code**: TypeScript starts
+`@vue/content-mapper`'s own Node process.
+
+There is nothing extra to install. The plugin ships both previews as its own
+pinned dependencies: TypeScript `7.1.0-beta` (under the npm alias
+`typescript-7`, so it never replaces the TypeScript that vue-tsc uses) and
+`@vue/content-mapper` `4.0.0-alpha.3`. They add about 35 MB to the install,
+most of it TypeScript 7's native binary.
+
+No config is needed: the plugin generates one that extends `tsconfig.app.json`
+(or else `tsconfig.json`) and adds `noEmit`, `skipLibCheck` and the Vue mapper.
+To control what gets checked, add `tsconfig.ts7-check.json` (or point
+`ts7Tsconfig` at another path); the plugin then uses it as is:
+
+```jsonc
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": { "noEmit": true, "skipLibCheck": true },
+  "contentMappers": [{ "package": "@vue/content-mapper", "extensions": [".vue"] }],
+  "include": ["src/**/*.ts", "src/**/*.tsx", "src/**/*.vue"]
+}
+```
+
+Put Vue compiler options in the mapper entry's `options`; the mapper ignores
+`vueCompilerOptions`.
+
+Either way, the plugin opens the config through a shim in
+`node_modules/.tsmigrate/ts7/` that links both packages, because TypeScript
+resolves the mapper (and the mapper resolves `typescript`) from the opened
+config's folder. Relative mapper `plugins` paths therefore resolve from the
+shim, so reference plugins by package name.
+
+Failures surface in two ways:
+
+- **A broken config or mapper** shows as a type-check error, never as all files
+  passing.
+- **When TypeScript 7.1 can't run at all** (crashed, no binary for the
+  platform), the pass falls back to `typeCheckCommand` and the toggle shows
+  why.
+
+To read a file's error messages, call `GET /api/type-errors?id=<file>`.
+
 ## CLI: `tsmigrate depth`
 
 A type is a contract, and a parent extends the contract of everything it
@@ -129,6 +177,8 @@ first.
 | Option             | Type                     | Default                                        | Description                                                                                                                                                                                                                                           |
 | ------------------ | ------------------------ | ---------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `typeCheckCommand` | `string[] \| false`      | `["vue-tsc", "--noEmit", "--pretty", "false"]` | Command run once for the project-wide type-check whose per-file error counts colour the graph. Must emit `tsc`-style `--pretty false` diagnostics. `false` skips the pass (every file shows as typed).                                                |
+| `experimentalTs7`  | `boolean`                | `false`                                        | Start with the experimental TypeScript 7.1 checker on (see above). The tool's toggle switches it at runtime. Runs external code: the content mapper's Node process.                                                                                  |
+| `ts7Tsconfig`      | `string`                 | `"tsconfig.ts7-check.json"`                    | Config the TypeScript 7.1 checker opens, relative to the Vite root. When missing, one is generated from `tsconfig.app.json` / `tsconfig.json`.                                                                                                        |
 | `blame`            | `boolean`                | `false`                                        | Enable per-file `git blame` (LoC per author) in the tool. Needs real commit history — a shallow clone has none.                                                                                                                                       |
 | `blameAliases`     | `Record<string, string>` | `{}`                                           | Map raw `git blame` author names to canonical display names (line counts merge). Only used when `blame` is on.                                                                                                                                        |
 | `toolPort`         | `number`                 | `7357`                                         | Port for the plugin's own tool server (dev only); falls back to an ephemeral port when taken.                                                                                                                                                         |
@@ -177,6 +227,23 @@ Then just edit and watch:
 serving its own prebuilt UI on `:7357`); rebuild it with `vp run build` when
 you want to verify that path. VSCode users get the same via the `Dev + Tool UI
 (HMR)` task in `.vscode/tasks.json`.
+
+### Testing an unreleased build on another machine
+
+```bash
+vp run pack:local   # build + pack → .pack/vite-plugin-tsmigrate-<version>.tgz
+```
+
+Copy the tarball over and add it to the project you want to try it on:
+
+```bash
+pnpm add -D ./vite-plugin-tsmigrate-<version>.tgz   # or npm i -D …
+```
+
+The tarball carries the prebuilt tool UI and layout wasm, so that machine
+needs neither Rust nor this repo. The install fetches the TypeScript 7.1
+binary for that machine's platform. After copying a newer tarball, run the
+same `add` again.
 
 ## Playgrounds
 
@@ -286,7 +353,8 @@ unrelated to the app server. The tool analyses the user's app and shows every
 component with its file path, LoC, and git blame (lines per author), plus the
 component import graph rendered as a WebGL radial view. Data flows over a small
 JSON API: `GET /api/graph` (progressive results while analyzers run; cheap
-`?since=<version>` probes once complete) and `GET /api/diagnostics`. Its URL is
+`?since=<version>` probes once complete), `GET /api/type-errors?id=<file>`
+(one file's type-error messages) and `GET /api/diagnostics`. Its URL is
 appended to Vite's block, styled exactly like Vite's output (green `➜`, cyan
 URL, via picocolors — Vite's own color lib):
 

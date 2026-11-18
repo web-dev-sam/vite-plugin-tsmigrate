@@ -6,7 +6,13 @@ import { AnalysisEngine } from "../src/analysis/engine.ts";
 import { crawlGraph, findEntries } from "../src/analysis/graph.ts";
 import type { AnalysisHost } from "../src/analysis/host.ts";
 import { computeHeights, type FileFacts, groupOf, makeGraph } from "../src/analysis/topology.ts";
-import { parseTscErrors } from "../src/analysis/typecheck.ts";
+import {
+  commandTypeChecker,
+  groupTs7Diagnostics,
+  parseTscErrors,
+  type TypeChecker,
+  withFallback,
+} from "../src/analysis/typecheck.ts";
 import { parseModule } from "../src/analysis/imports.ts";
 
 const ROOT = "/app";
@@ -802,19 +808,113 @@ test("engine produces a complete two-graph snapshot with all facts", async () =>
   expect((await engine.getGraph()).version).toBe(graph.version);
 });
 
-test("parseTscErrors counts per-file errors keyed to absolute ids", () => {
+test("parseTscErrors groups per-file errors keyed to absolute ids", () => {
   const output = [
     "src/App.vue(1,1): error TS1000: bad",
+    "  detail of bad",
     "src/App.vue(2,3): error TS1001: worse",
     "src/lib/util.ts(4,5): error TS2000: nope",
     "not a diagnostic line",
     "/abs/Other.ts(1,1): error TS3000: absolute path stays put",
   ].join("\n");
-  const counts = parseTscErrors(output, "/root");
-  expect(counts.get("/root/src/App.vue")).toBe(2);
-  expect(counts.get("/root/src/lib/util.ts")).toBe(1);
-  expect(counts.get("/abs/Other.ts")).toBe(1);
-  expect(counts.size).toBe(3);
+  const errors = parseTscErrors(output, "/root");
+  expect(errors.get("/root/src/App.vue")).toEqual([
+    { line: 1, column: 1, code: 1000, message: "bad\n  detail of bad" },
+    { line: 2, column: 3, code: 1001, message: "worse" },
+  ]);
+  expect(errors.get("/root/src/lib/util.ts")).toHaveLength(1);
+  expect(errors.get("/abs/Other.ts")?.[0].message).toBe("absolute path stays put");
+  expect(errors.size).toBe(3);
+});
+
+test("parseTscErrors keys Windows diagnostics by Vite's forward-slash ids", () => {
+  const output = [
+    "src\\App.vue(1,1): error TS1: relative, backslashes",
+    "C:\\app\\src\\util.ts(1,1): error TS2: absolute, backslashes",
+  ].join("\r\n");
+  expect([...parseTscErrors(output, "C:/app").keys()]).toEqual([
+    "C:/app/src/App.vue",
+    "C:/app/src/util.ts",
+  ]);
+});
+
+test("groupTs7Diagnostics keeps per-file errors, fails on fileless or mapper errors", () => {
+  const error = {
+    category: 1,
+    code: 2322,
+    text: "Type 'number' is not assignable to type 'string'.",
+  };
+  const ok = groupTs7Diagnostics([
+    { ...error, fileName: "/r/src/App.vue", startPosition: { line: 2, character: 6 } },
+    {
+      ...error,
+      fileName: "/r/src/App.vue",
+      startPosition: { line: 4, character: 0 },
+      messageChain: [{ category: 1, code: 2326, text: "Types of property 'a' are incompatible." }],
+    },
+    // Warnings/suggestions don't make a file red.
+    { category: 2, code: 80001, text: "suggestion", fileName: "/r/src/ok.ts" },
+  ]);
+  expect(ok.error).toBeUndefined();
+  expect([...ok.errors.keys()]).toEqual(["/r/src/App.vue"]);
+  expect(ok.errors.get("/r/src/App.vue")).toEqual([
+    { line: 3, column: 7, code: 2322, message: error.text },
+    {
+      line: 5,
+      column: 1,
+      code: 2322,
+      message: `${error.text}\n  Types of property 'a' are incompatible.`,
+    },
+  ]);
+
+  // A config error has no file: the check failed — never "everything passes".
+  const config = groupTs7Diagnostics([
+    {
+      category: 1,
+      code: 18068,
+      text: "Content mappers require the '--runExternalCode' command line flag to be enabled.",
+    },
+    { ...error, fileName: "/r/src/main.ts" },
+  ]);
+  expect(config.errors.size).toBe(0);
+  expect(config.error).toContain("TS18068");
+
+  // A mapper crash lands on each .vue file, but those files went unchecked.
+  const mapper = groupTs7Diagnostics([
+    {
+      category: 1,
+      code: 18069,
+      text: "The content mapper '@vue/content-mapper' failed to transform this file.",
+      fileName: "/r/src/App.vue",
+    },
+  ]);
+  expect(mapper.errors.size).toBe(0);
+  expect(mapper.error).toContain("/r/src/App.vue");
+});
+
+test("withFallback switches to the command checker once TS 7.1 throws", async () => {
+  let primaryDisposed = false;
+  const primary: TypeChecker = {
+    info: { ts7: true },
+    check: () => Promise.reject(new Error("TypeScript 7.1 not found")),
+    fileChanged() {},
+    dispose() {
+      primaryDisposed = true;
+    },
+  };
+  const fallback = commandTypeChecker(
+    fakeHost(async () => ({ stdout: "src/App.vue(1,1): error TS1: x\n", stderr: "", code: 2 })),
+    ["vue-tsc"],
+  );
+  const checker = withFallback(primary, fallback);
+  const result = await checker.check();
+  expect(result.errors.get("/app/src/App.vue")).toHaveLength(1);
+  expect(checker.info).toEqual({ ts7: true, fallback: "TypeScript 7.1 not found" });
+  expect(primaryDisposed).toBe(true);
+
+  // Without a command to fall back to, the throw is a failed check.
+  const alone = withFallback({ ...primary, dispose() {} }, null);
+  expect((await alone.check()).error).toContain("TypeScript 7.1 not found");
 });
 
 test("topology computes heights, strict-red propagation, and groups", () => {
@@ -889,10 +989,10 @@ test("engine flows type errors into typeErrors and strictRed", async () => {
   // Canned `--pretty false` diagnostics for one component; a checker exits
   // nonzero when it has errors, which is normal (not a failure).
   const diagnostics = "src/components/Child.vue(2,7): error TS2322: boom\n";
-  const engine = new AnalysisEngine(
-    fakeHost(async () => ({ stdout: diagnostics, stderr: "", code: 1 })),
-    { typeCheckCommand: ["tsc", "--noEmit", "--pretty", "false"] },
-  );
+  const host = fakeHost(async () => ({ stdout: diagnostics, stderr: "", code: 1 }));
+  const engine = new AnalysisEngine(host, {
+    typeChecker: commandTypeChecker(host, ["tsc", "--noEmit", "--pretty", "false"]),
+  });
   await expect.poll(async () => (await engine.getGraph()).complete, { timeout: 2000 }).toBe(true);
 
   const graph = await engine.getGraph();
@@ -904,9 +1004,13 @@ test("engine flows type errors into typeErrors and strictRed", async () => {
   expect(child.typeErrors).toBe(1);
   expect(child.status.typecheck).toBe("ready");
   expect(child.strictRed).toBe(true);
+  expect(engine.typeErrorsOf(child.id)).toEqual([
+    { line: 2, column: 7, code: 2322, message: "boom" },
+  ]);
   // strictRed propagates UP to the importer (App imports Child).
   expect(app.typeErrors).toBe(0);
   expect(app.strictRed).toBe(true);
+  expect(engine.typeErrorsOf(app.id)).toEqual([]);
   // Untouched leaf stays green.
   expect(deep.typeErrors).toBe(0);
   expect(deep.strictRed).toBe(false);
@@ -920,10 +1024,10 @@ test("engine flows type errors into typeErrors and strictRed", async () => {
 
 test("engine treats type-check failure as an error status", async () => {
   // No parseable diagnostics + nonzero exit → the pass failed.
-  const engine = new AnalysisEngine(
-    fakeHost(async () => ({ stdout: "", stderr: "command not found: tsc", code: 127 })),
-    { typeCheckCommand: ["tsc", "--noEmit", "--pretty", "false"] },
-  );
+  const host = fakeHost(async () => ({ stdout: "", stderr: "command not found: tsc", code: 127 }));
+  const engine = new AnalysisEngine(host, {
+    typeChecker: commandTypeChecker(host, ["tsc", "--noEmit", "--pretty", "false"]),
+  });
   await expect.poll(async () => (await engine.getGraph()).complete, { timeout: 2000 }).toBe(true);
 
   const graph = await engine.getGraph();
@@ -932,10 +1036,50 @@ test("engine treats type-check failure as an error status", async () => {
   expect(app.typeErrors).toBeNull();
   expect(app.strictRed).toBe(false);
   expect(app.errors.typecheck).toContain("command not found");
+  expect(engine.typeErrorsOf(app.id)).toBeNull();
 });
 
-test("typeCheckCommand:false disables the pass without blocking complete", async () => {
-  const engine = new AnalysisEngine(fakeHost(), { typeCheckCommand: false });
+test("engine swaps checkers: the new one's result replaces the old", async () => {
+  const childError = "src/components/Child.vue(1,1): error TS1: old checker\n";
+  const host = fakeHost(async () => ({ stdout: childError, stderr: "", code: 1 }));
+  const engine = new AnalysisEngine(host, { typeChecker: commandTypeChecker(host, ["vue-tsc"]) });
+  await expect.poll(async () => (await engine.getGraph()).complete, { timeout: 2000 }).toBe(true);
+  const childId = "/app/src/components/Child.vue";
+  expect(engine.typeErrorsOf(childId)).toHaveLength(1);
+
+  let disposed = false;
+  engine.setTypeChecker({
+    info: { ts7: true },
+    check: async () => ({
+      errors: new Map([["/app/src/App.vue", [{ line: 1, column: 1, code: 2, message: "new" }]]]),
+    }),
+    fileChanged() {},
+    dispose() {
+      disposed = true;
+    },
+  });
+  // Until the new pass lands nothing is known — not "all green". Like any
+  // analysis, the pass is scheduled by the next snapshot request (the UI poll).
+  expect(engine.typeErrorsOf(childId)).toBeNull();
+  await expect
+    .poll(
+      async () => {
+        await engine.getGraph();
+        return engine.typeErrorsOf(childId);
+      },
+      { timeout: 2000 },
+    )
+    .toEqual([]);
+  const graph = await engine.getGraph();
+  expect(graph.typeChecker).toEqual({ ts7: true });
+  expect(graph.vue.nodes.find((node) => node.file === "src/App.vue")?.typeErrors).toBe(1);
+
+  engine.dispose();
+  expect(disposed).toBe(true);
+});
+
+test("a disabled type-check pass doesn't block complete", async () => {
+  const engine = new AnalysisEngine(fakeHost(), { typeChecker: null });
   await expect.poll(async () => (await engine.getGraph()).complete, { timeout: 2000 }).toBe(true);
 
   const graph = await engine.getGraph();

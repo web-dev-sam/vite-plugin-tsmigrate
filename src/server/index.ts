@@ -1,6 +1,8 @@
 import { createServer as createHttpServer, type Server } from "node:http";
 import type { ViteDevServer } from "vite";
 import { AnalysisEngine } from "../analysis/engine.ts";
+import type { AnalysisHost } from "../analysis/host.ts";
+import { commandTypeChecker, type TypeChecker, withFallback } from "../analysis/typecheck.ts";
 import { patchPrintUrls } from "../log.ts";
 import type { ResolvedOptions } from "../options.ts";
 import { type ApiHandler, createApiHandler } from "./routes.ts";
@@ -10,6 +12,7 @@ import {
   FALLBACK_HTML,
   resolveClientDir,
 } from "./static.ts";
+import { createTs7Checker } from "./ts7.ts";
 import { createAnalysisHost, createContentSearch, wireInvalidation } from "./vite-adapter.ts";
 
 /** The live engine + request handlers for the current dev-server instance. */
@@ -29,6 +32,9 @@ interface ToolHandlers {
 let tool: { http: Server; port: number } | null = null;
 let handlers: ToolHandlers | null = null;
 let exitWired = false;
+// The tool UI's TS 7.1 toggle outlives dev-server restarts (null = follow the
+// `experimentalTs7` option).
+let ts7Toggle: boolean | null = null;
 
 /**
  * The plugin's own tool: a prebuilt Vue app plus a JSON API, served from a
@@ -46,21 +52,30 @@ export async function startToolServer(
     return;
   }
 
-  const engine = new AnalysisEngine(createAnalysisHost(server), {
-    typeCheckCommand: options.typeCheckCommand,
+  const host = createAnalysisHost(server);
+  const typeChecker = (ts7: boolean) => createTypeChecker(host, options, ts7);
+  const engine = new AnalysisEngine(host, {
+    typeChecker: typeChecker(ts7Toggle ?? options.experimentalTs7),
     blame: options.blame,
     blameAliases: options.blameAliases,
   });
   wireInvalidation(server, engine);
+  // The TS 7.1 checker owns a Go process (plus the content mapper's Node
+  // process): release it with the dev server, not just on the next restart.
+  server.httpServer.once("close", () => engine.dispose());
   const search = await createContentSearch(server.config.root);
   const clientDir = resolveClientDir();
+  const setTs7 = (enabled: boolean) => {
+    ts7Toggle = enabled;
+    engine.setTypeChecker(typeChecker(enabled));
+  };
 
   // Retire the previous dev server's engine (its analysis, watchers and
   // type-check process) and serve from this one.
   handlers?.engine.dispose();
   handlers = {
     engine,
-    handleApi: createApiHandler(server, engine, search),
+    handleApi: createApiHandler(server, engine, search, setTs7),
     serveClient: clientDir ? createClientHandler(clientDir) : null,
   };
 
@@ -96,6 +111,24 @@ export async function startToolServer(
   }
 }
 
+/**
+ * The project type-check pass: `typeCheckCommand` (vue-tsc by default), or —
+ * with the experimental toggle on — the TypeScript 7.1 API checker, which
+ * falls back to the command when it cannot run.
+ */
+function createTypeChecker(
+  host: AnalysisHost,
+  options: ResolvedOptions,
+  ts7: boolean,
+): TypeChecker | null {
+  const command =
+    options.typeCheckCommand === false ? null : commandTypeChecker(host, options.typeCheckCommand);
+  if (!ts7) {
+    return command;
+  }
+  return withFallback(createTs7Checker(host.root, options.ts7Tsconfig), command);
+}
+
 // Free the tool socket when the process ends (the tool lives for the process,
 // like other devtool servers). Registered once; a killed process frees it too.
 function wireExit(): void {
@@ -116,6 +149,7 @@ function wireExit(): void {
 export function stopToolServer(): void {
   handlers?.engine.dispose();
   handlers = null;
+  ts7Toggle = null;
   tool?.http.close();
   tool?.http.closeAllConnections();
   tool = null;

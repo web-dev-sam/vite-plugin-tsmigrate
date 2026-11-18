@@ -5,7 +5,7 @@ import { createLogger, createServer } from "vite";
 import { expect, test } from "vite-plus/test";
 import { type ComponentGraph, type Diagnostics, tsmigrate } from "../src/index.ts";
 import { listenTool, stopToolServer } from "../src/server/index.ts";
-import { createAnalysisHost } from "../src/server/vite-adapter.ts";
+import { createAnalysisHost, windowsCommandLine } from "../src/server/vite-adapter.ts";
 import { crawlGraph, findEntries } from "../src/analysis/graph.ts";
 
 function captureLogger(messages: string[]) {
@@ -172,4 +172,10 @@ test("listenTool reclaims its preferred port once it frees, not an ephemeral one
   } finally {
     await new Promise<void>((resolve) => tool.close(() => resolve()));
   }
+});
+
+test("windowsCommandLine keeps spaced paths as one cmd.exe argument", () => {
+  expect(
+    windowsCommandLine("vue-tsc", ["--noEmit", "-p", "C:/My Projects/app/tsconfig.json", 'a"b']),
+  ).toBe('vue-tsc --noEmit -p "C:/My Projects/app/tsconfig.json" "a""b"');
 });

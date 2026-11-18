@@ -15,9 +15,10 @@ A minimal, well-structured **Vite 8** plugin (hello world), developed with the
 - The tool analyses the user's app: **component import graph** (nodes =
   `.vue` files, edges collapse pass-through barrels), **LoC**, and **git
   blame lines-per-author** per component, served via `/api/graph` with
-  progressive per-analyzer status. `/api/diagnostics` is the environment
-  summary. The tool draws the graph with WebGL2 and lays it out with a
-  Rust/WASM force simulation in a Web Worker (see `tool/` below).
+  progressive per-analyzer status. `/api/type-errors?id=` serves one file's
+  type-error messages; `/api/diagnostics` is the environment summary. The tool
+  draws the graph with WebGL2 and lays it out with a Rust/WASM force
+  simulation in a Web Worker (see `tool/` below).
 - Also a **CLI**: `tsmigrate depth [n]` prints the crawl as a child-first work
   list (depth 0 = leaves) — a type is a contract and a parent extends the
   contract of everything it imports, so migration only pays off bottom-up.
@@ -51,6 +52,10 @@ A minimal, well-structured **Vite 8** plugin (hello world), developed with the
 "queued"`; currently `loc` and `blame`.
   - `cache.ts` — FactStore keyed (file, analyzer); invalidate per file
     (watcher) or per kind (blame on HEAD move).
+  - `typecheck.ts` — the `TypeChecker` seam behind `typeErrors`:
+    `commandTypeChecker` (`typeCheckCommand`, `--pretty false` parsing),
+    TS 7.1 diagnostic grouping (fileless/content-mapper errors = failed check,
+    never all-green), and `withFallback` (TS 7.1 throws → command).
   - `engine.ts` — orchestration: crawl + schedule + bounded queue (4) +
     monotonic `version`; snapshots are progressive, never blocking.
 - `src/server/` —
@@ -59,7 +64,18 @@ A minimal, well-structured **Vite 8** plugin (hello world), developed with the
     runner). Vite API drift lands here.
   - `routes.ts` — HTTP → engine mapping; the transport seam (`?since=` cheap
     probes now; birpc/WS later replaces this file + `tool/src/api/client.ts`).
-  - `static.ts`, `diagnostics.ts`, `index.ts` (lifecycle).
+  - `ts7.ts` — EXPERIMENTAL TypeScript 7.1 API checker. TS 7.1 (`typescript-7`
+    npm alias) and `@vue/content-mapper` are the plugin's own pinned
+    `dependencies` — users install nothing: one API per
+    engine, `createSnapshot({ openProjects })` (not `createPrograms` — content
+    mappers ignore it), watcher events → `snapshot.update` with
+    `fileNotifications` + `ensurePrograms: true`. TypeScript resolves the
+    mapper, and the mapper resolves plain `typescript`, from the opened
+    config's dir — so the user's config is always opened through a shim in
+    `node_modules/.tsmigrate/ts7/` linking both packages; without a
+    `ts7Tsconfig` file the shim itself extends `tsconfig.app.json`/`tsconfig.json`
+    and declares the mapper. Toggled at runtime via `POST /api/ts7`.
+  - `static.ts`, `diagnostics.ts`, `index.ts` (lifecycle; builds the checker).
 - `src/constants.ts`, `options.ts` (defaults live ONLY in `resolveOptions`),
   `virtual.ts`, `log.ts` (Vite-styled output via picocolors — keep new lines
   consistent).
@@ -108,6 +124,12 @@ A minimal, well-structured **Vite 8** plugin (hello world), developed with the
   `tests/fixtures/migrating/` — a half-migrated app with an untyped SFC, a
   `.js` leaf and a real import cycle — so the child-first order, the
   `--untyped` filter and the cycle warning are covered without spawning.
+  `tests/ts7.test.ts` runs the REAL TypeScript 7.1 API + `@vue/content-mapper`
+  (the plugin's own deps; the repo's own `typescript` devDependency stays
+  7.0) over `tests/fixtures/ts7/`, covering both shim forms (user config and
+  generated), SFC-mapped positions and watcher-driven snapshot updates.
+- **Testing on another machine before publishing:** `vp run pack:local` →
+  `.pack/*.tgz` (prebuilt tool UI + wasm inside; no Rust needed there).
 - **Playground consumes the plugin from source** (`../src/index.ts`) —
   instant dev loop; packaging is validated by `vp pack` + attw.
 - **Tool UI is prebuilt, not dev-served:** the plugin serves `dist/client`
@@ -122,6 +144,8 @@ A minimal, well-structured **Vite 8** plugin (hello world), developed with the
   (aliases map `#/*` and `@vben/*` to package source). Type-check runs vben's
   own `vue-tsc` over the app (clean → all green; needs the submodule's
   `node_modules`); blame is empty (shallow history). Run via `vp dev`.
+  `playground/tsconfig.ts7-check.json` feeds the tool's experimental TS 7.1
+  toggle (the alpha mapper reports ~230 files vue-tsc passes).
   `.vscode/` is git-tracked (settings, extensions, tasks).
 - `playground-vuetify/` — the **Vuetify monorepo itself** (`vuetifyjs/vuetify`)
   as a submodule under `playground-vuetify/vuetify`: a component _library_

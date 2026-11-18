@@ -29,6 +29,8 @@ defineProps<{
   nodeDetail: NodeDetail | null;
   /** Whether the project has any `.vue` components (gates the vue-only toggle). */
   hasVue: boolean;
+  /** Why the TS 7.1 checker fell back to `typeCheckCommand` (null: it didn't). */
+  ts7Fallback: string | null;
 }>();
 const emit = defineEmits<{
   depthClick: [height: number];
@@ -47,6 +49,7 @@ const search = defineModel<string>("search", { required: true });
 const contentSearch = defineModel<string>("contentSearch", { required: true });
 const blameGreen = defineModel<boolean>("blameGreen", { required: true });
 const blameRed = defineModel<boolean>("blameRed", { required: true });
+const ts7 = defineModel<boolean>("ts7", { required: true });
 
 // The settings toggle is phrased as "only show vue files", the inverse of the
 // `includeTs` source of truth (full graph is the default view).
@@ -246,6 +249,23 @@ function startResize(e: PointerEvent) {
               >
                 <Checkbox v-model="vueOnly">only .vue files</Checkbox>
               </Tooltip>
+            </div>
+          </div>
+
+          <div>
+            <p class="mb-1.5 text-xs font-medium tracking-wide text-muted uppercase">type check</p>
+            <div class="space-y-2.5">
+              <Tooltip
+                content="Experimental: type-check with TypeScript 7.1 (beta) and @vue/content-mapper instead of vue-tsc (typeCheckCommand). Runs external code — TypeScript starts the content mapper's own Node process. Uses tsconfig.ts7-check.json when present, else your tsconfig plus the Vue mapper; falls back to typeCheckCommand when it can't run."
+              >
+                <Checkbox v-model="ts7">
+                  TypeScript 7.1
+                  <span class="text-xs text-warn">experimental · runs external code</span>
+                </Checkbox>
+              </Tooltip>
+              <p v-if="ts7 && ts7Fallback" class="text-xs break-words text-warn">
+                Fell back to typeCheckCommand: {{ ts7Fallback }}
+              </p>
             </div>
           </div>
         </div>

@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, reactive, ref, shallowRef, watch } from "vue";
 import type { ComponentGraph, Diagnostics } from "../../src/shared/types.ts";
-import { fetchDiagnostics, fetchGraph, fetchSearch } from "./api/client.ts";
+import { fetchDiagnostics, fetchGraph, fetchSearch, setTs7 } from "./api/client.ts";
 import ControlPanel from "./components/ControlPanel.vue";
 import GraphChart from "./components/GraphChart.vue";
 import SourceModal from "./components/SourceModal.vue";
@@ -81,6 +81,26 @@ const header = computed(() => ({
   projectName: diag.value?.projectName ?? null,
 }));
 
+// The experimental TypeScript 7.1 checker toggle lives on the server (it
+// survives reloads and dev-server restarts); a click shows at once, then the
+// next snapshot confirms it.
+const ts7Pending = ref<boolean | null>(null);
+const ts7 = computed({
+  get: () => ts7Pending.value ?? graph.value?.typeChecker.ts7 ?? false,
+  set: (enabled: boolean) => {
+    ts7Pending.value = enabled;
+    setTs7(enabled)
+      .then(() => refresh())
+      .catch((err: unknown) => {
+        error.value = String(err);
+      })
+      .finally(() => {
+        ts7Pending.value = null;
+      });
+  },
+});
+const ts7Fallback = computed(() => graph.value?.typeChecker.fallback ?? null);
+
 // Browser tab reflects the analyzed project by name (falls back to the tool's own name).
 watch(
   () => header.value.projectName,
@@ -103,16 +123,26 @@ let stopped = false;
 // complete so watcher-driven changes still surface.
 async function poll() {
   try {
-    const res = await fetchGraph(graph.value?.version);
-    if (!("unchanged" in res)) {
-      graph.value = res;
-    }
+    await refresh(graph.value?.version);
     error.value = null;
   } catch (err) {
     error.value = String(err);
   }
   if (stopped) return;
   timer = setTimeout(poll, graph.value?.complete ? 2000 : 300);
+}
+
+// Requests can overlap (a poll in flight while the toggle refetches): only
+// the most recently issued one that answered may set the graph. Ordered by
+// request, not by `version` — a restarted dev server starts counting anew.
+let requested = 0;
+let applied = 0;
+async function refresh(since?: number) {
+  const seq = ++requested;
+  const res = await fetchGraph(since);
+  if (seq < applied) return;
+  applied = seq;
+  if (!("unchanged" in res)) graph.value = res;
 }
 
 // Content search runs server-side via ripgrep. Debounce keystrokes, and guard
@@ -188,9 +218,11 @@ onUnmounted(() => {
     v-model:blame-red="view.blameRed"
     :readouts="readouts"
     :header="header"
+    v-model:ts7="ts7"
     :ripgrep="ripgrep"
     :node-detail="nodeDetail"
     :has-vue="hasVue"
+    :ts7-fallback="ts7Fallback"
     @depth-click="chart?.toggleDepth($event)"
   />
 

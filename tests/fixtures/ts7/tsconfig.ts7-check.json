@@ -1,0 +1,6 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": { "noEmit": true, "skipLibCheck": true },
+  "contentMappers": [{ "package": "@vue/content-mapper", "extensions": [".vue"] }],
+  "include": ["src/**/*.ts", "src/**/*.vue"]
+}

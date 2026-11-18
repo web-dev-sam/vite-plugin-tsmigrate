@@ -1,6 +1,8 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
+import { isAbsolute, resolve } from "node:path";
 import type { ViteDevServer } from "vite";
 import type { AnalysisEngine } from "../analysis/engine.ts";
+import type { TypeErrorsResult } from "../shared/types.ts";
 import { collectDiagnostics } from "./diagnostics.ts";
 import { type ContentSearch, readProjectFile } from "./vite-adapter.ts";
 
@@ -17,6 +19,7 @@ export function createApiHandler(
   server: ViteDevServer,
   engine: AnalysisEngine,
   search: ContentSearch,
+  setTs7: (enabled: boolean) => void,
 ): ApiHandler {
   return async (req, res) => {
     const url = new URL(req.url ?? "/", "http://tool.local");
@@ -55,6 +58,46 @@ export function createApiHandler(
         return true;
       }
       sendJson(res, await engine.getGraph());
+      return true;
+    }
+
+    if (url.pathname === "/api/type-errors") {
+      // `id` is an absolute module id (`ComponentNode.id`); a root-relative
+      // path (`ComponentNode.file`) works too.
+      const raw = url.searchParams.get("id") ?? "";
+      const id = isAbsolute(raw) ? raw : resolve(server.config.root, raw);
+      const result: TypeErrorsResult = { id, errors: engine.typeErrorsOf(id) };
+      sendJson(res, result);
+      return true;
+    }
+
+    // The tool's experimental TypeScript 7.1 toggle; body `{ "enabled": boolean }`.
+    // Turning it on lets TypeScript spawn the content mapper, so only the tool
+    // itself may flip it: a JSON content type makes any cross-origin page's
+    // request preflight, which this server never grants.
+    if (url.pathname === "/api/ts7" && req.method === "POST") {
+      if (req.headers["content-type"] !== "application/json") {
+        res.statusCode = 415;
+        res.end();
+        return true;
+      }
+      let body = "";
+      for await (const chunk of req) body += chunk;
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(body);
+      } catch {
+        res.statusCode = 400;
+        res.end();
+        return true;
+      }
+      const enabled =
+        typeof parsed === "object" &&
+        parsed !== null &&
+        "enabled" in parsed &&
+        parsed.enabled === true;
+      setTs7(enabled);
+      sendJson(res, { version: engine.version });
       return true;
     }
 

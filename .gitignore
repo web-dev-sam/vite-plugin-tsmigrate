@@ -2,6 +2,7 @@ node_modules
 dist
 *.log
 *.tgz
+.pack/
 .DS_Store
 
 # Local scratch output

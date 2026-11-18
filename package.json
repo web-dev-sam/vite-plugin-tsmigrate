@@ -45,12 +45,15 @@
     "dev:tool": "vp run build:layout && node scripts/dev.mjs",
     "test": "vp test",
     "check": "vp check",
+    "pack:local": "vp run build && vp pm pack --pack-destination .pack",
     "prepublishOnly": "vp run build"
   },
   "dependencies": {
+    "@vue/content-mapper": "4.0.0-alpha.3",
     "oxc-parser": "^0.144.0",
     "picocolors": "^1.1.1",
-    "tinyglobby": "^0.2.15"
+    "tinyglobby": "^0.2.15",
+    "typescript-7": "npm:typescript@7.1.0-beta"
   },
   "devDependencies": {
     "@types/node": "^26.1.1",

@@ -106,6 +106,42 @@ export interface ComponentGraph {
    * shows a warning banner when non-empty. Absolute paths.
    */
   autoImportManifests: string[];
+  /** Which checker produces `typeErrors` — drives the experimental TS 7.1 toggle. */
+  typeChecker: TypeCheckerInfo;
+}
+
+/**
+ * The project type-check pass behind `typeErrors`: `typeCheckCommand`
+ * (vue-tsc by default) or the experimental TypeScript 7.1 API checker.
+ */
+export interface TypeCheckerInfo {
+  /** The experimental TypeScript 7.1 checker is switched on. */
+  ts7: boolean;
+  /**
+   * Why the TS 7.1 checker could not run (not installed, crashed); the pass
+   * fell back to `typeCheckCommand`. Absent while TS 7.1 works or is off.
+   */
+  fallback?: string;
+}
+
+/** One type error of a file, 1-based like an editor's line:column. */
+export interface TypeErrorMessage {
+  line: number;
+  column: number;
+  /** The `TSxxxx` number. */
+  code: number;
+  /** Full message text; chained detail lines are indented below the head. */
+  message: string;
+}
+
+/**
+ * Payload of `GET /api/type-errors?id=<absolute module id>`. `errors` is
+ * `null` while the type-check pass has no result (pending, failed or
+ * disabled) — never an empty list standing in for "unknown".
+ */
+export interface TypeErrorsResult {
+  id: string;
+  errors: TypeErrorMessage[] | null;
 }
 
 /** Cheap answer to `GET /api/graph?since=<version>` when nothing changed. */

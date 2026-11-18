@@ -1,4 +1,4 @@
-import { execFile } from "node:child_process";
+import { type ExecException, exec as execShell, execFile } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import { isAbsolute, relative, resolve, sep } from "node:path";
 import { promisify } from "node:util";
@@ -86,27 +86,41 @@ export function createAnalysisHost(server: ViteDevServer): AnalysisHost {
         stderr: string;
         code: number;
       }>();
-      execFile(
-        command,
-        args,
-        { cwd: root, maxBuffer: 256 * 1024 * 1024 },
-        (error, stdout, stderr) => {
-          if (!error) {
-            resolve({ stdout, stderr, code: 0 });
-            return;
-          }
-          // Nonzero exit → `code` is the numeric status. Spawn failure
-          // → `code` is a string (e.g. "ENOENT"); surface its message.
-          if (typeof error.code === "number") {
-            resolve({ stdout, stderr, code: error.code });
-          } else {
-            resolve({ stdout, stderr: stderr || error.message, code: 1 });
-          }
-        },
-      );
+      const options = { cwd: root, maxBuffer: 256 * 1024 * 1024 };
+      const done = (error: ExecException | null, stdout: string, stderr: string) => {
+        if (!error) {
+          resolve({ stdout, stderr, code: 0 });
+          return;
+        }
+        // Nonzero exit → `code` is the numeric status. Spawn failure
+        // → `code` is a string (e.g. "ENOENT"); surface its message.
+        if (typeof error.code === "number") {
+          resolve({ stdout, stderr, code: error.code });
+        } else {
+          resolve({ stdout, stderr: stderr || error.message, code: 1 });
+        }
+      };
+      // Package binaries are `.cmd` shims on Windows (`vue-tsc.cmd`), which
+      // only a shell can start — `execFile` fails with EINVAL/ENOENT there.
+      if (process.platform === "win32") {
+        execShell(windowsCommandLine(command, args), options, done);
+      } else {
+        execFile(command, args, options, done);
+      }
       return promise;
     },
   };
+}
+
+/**
+ * A `cmd.exe` command line for `command` + `args`: arguments with spaces or
+ * shell metacharacters are double-quoted (inner quotes doubled), so a project
+ * path like `C:/My Projects/app/tsconfig.json` stays one argument.
+ */
+export function windowsCommandLine(command: string, args: string[]): string {
+  return [command, ...args]
+    .map((arg) => (/^[\w\-./\\:=@+,]+$/.test(arg) ? arg : `"${arg.replaceAll('"', '""')}"`))
+    .join(" ");
 }
 
 /**
@@ -183,15 +197,15 @@ export async function readProjectFile(
 
 /** Forward watcher events to the engine; detach when the server closes. */
 export function wireInvalidation(server: ViteDevServer, engine: AnalysisEngine): void {
-  const onFileEvent = (path: string) => {
-    engine.invalidateFile(path);
-  };
-  server.watcher.on("change", onFileEvent);
-  server.watcher.on("add", onFileEvent);
-  server.watcher.on("unlink", onFileEvent);
+  const onChange = (path: string) => engine.invalidateFile(path, "change");
+  const onAdd = (path: string) => engine.invalidateFile(path, "add");
+  const onUnlink = (path: string) => engine.invalidateFile(path, "unlink");
+  server.watcher.on("change", onChange);
+  server.watcher.on("add", onAdd);
+  server.watcher.on("unlink", onUnlink);
   server.httpServer?.once("close", () => {
-    server.watcher.off("change", onFileEvent);
-    server.watcher.off("add", onFileEvent);
-    server.watcher.off("unlink", onFileEvent);
+    server.watcher.off("change", onChange);
+    server.watcher.off("add", onAdd);
+    server.watcher.off("unlink", onUnlink);
   });
 }

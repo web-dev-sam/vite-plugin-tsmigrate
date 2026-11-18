@@ -1,0 +1,10 @@
+{
+  "extends": "./vben/apps/web-antd/tsconfig.json",
+  "compilerOptions": { "noEmit": true, "skipLibCheck": true },
+  "contentMappers": [{ "package": "@vue/content-mapper", "extensions": [".vue"] }],
+  "include": [
+    "./vben/apps/web-antd/src/**/*.ts",
+    "./vben/apps/web-antd/src/**/*.tsx",
+    "./vben/apps/web-antd/src/**/*.vue"
+  ]
+}

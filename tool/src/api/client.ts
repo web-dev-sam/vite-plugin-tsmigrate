@@ -58,3 +58,18 @@ export async function fetchSource(id: string): Promise<{ file: string; content: 
   }
   return { file: data.file, content: data.content };
 }
+
+/**
+ * Switch the experimental TypeScript 7.1 checker on or off. JSON body on
+ * purpose: the server only accepts it from a same-origin page.
+ */
+export async function setTs7(enabled: boolean): Promise<void> {
+  const res = await fetch("/api/ts7", {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ enabled }),
+  });
+  if (!res.ok) {
+    throw new Error(`TypeScript 7.1 toggle failed: HTTP ${res.status}`);
+  }
+}

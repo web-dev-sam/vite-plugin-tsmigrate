@@ -32,6 +32,32 @@ export interface TsMigrateOptions {
   typeCheckCommand?: string[] | false;
 
   /**
+   * EXPERIMENTAL. Start with the TypeScript 7.1 (beta) checker switched on,
+   * instead of `typeCheckCommand`; the tool UI toggles it at runtime either
+   * way. It type-checks through the TS 7.1 API with `@vue/content-mapper`
+   * mapping `.vue` files — both bundled as this plugin's own dependencies, so
+   * nothing extra to install — and RUNS EXTERNAL CODE: TypeScript spawns the
+   * content mapper's Node process. When the checker cannot run it falls back
+   * to `typeCheckCommand`.
+   *
+   * @default false
+   */
+  experimentalTs7?: boolean;
+
+  /**
+   * The tsconfig the experimental TypeScript 7.1 checker opens, relative to
+   * the Vite root, when it exists. Extend your base config and declare the
+   * mapper directly:
+   * `"contentMappers": [{ "package": "@vue/content-mapper", "extensions": [".vue"] }]`,
+   * with `noEmit`, `skipLibCheck` and an `include` that covers your `.vue` files.
+   * Without it, the plugin generates that config on top of `tsconfig.app.json`
+   * (else `tsconfig.json`).
+   *
+   * @default "tsconfig.ts7-check.json"
+   */
+  ts7Tsconfig?: string;
+
+  /**
    * Enable per-file `git blame` analysis (lines of code per author), surfaced
    * in the tool. Runs `git blame` per reachable file on the background queue,
    * so it costs one git process per file and needs real commit history (a
@@ -61,8 +87,18 @@ export function resolveOptions(options: TsMigrateOptions): ResolvedOptions {
     logOnStart = true,
     toolPort = DEFAULT_TOOL_PORT,
     typeCheckCommand = ["vue-tsc", "--noEmit", "--pretty", "false"],
+    experimentalTs7 = false,
+    ts7Tsconfig = "tsconfig.ts7-check.json",
     blame = false,
     blameAliases = {},
   } = options;
-  return { logOnStart, toolPort, typeCheckCommand, blame, blameAliases };
+  return {
+    logOnStart,
+    toolPort,
+    typeCheckCommand,
+    experimentalTs7,
+    ts7Tsconfig,
+    blame,
+    blameAliases,
+  };
 }

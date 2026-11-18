@@ -3,16 +3,19 @@ import type {
   BlameSummary,
   ComponentEdge,
   ComponentGraph,
+  TypeErrorMessage,
 } from "../shared/types.ts";
 import { applyBlameAliases, blameAnalyzer, locAnalyzer } from "./analyzers/index.ts";
 import { FactStore } from "./cache.ts";
 import { type CrawlFile, crawlGraph, findEntries } from "./graph.ts";
 import type { AnalysisHost } from "./host.ts";
 import { type FileFacts, makeGraph } from "./topology.ts";
-import { runTypeCheck } from "./typecheck.ts";
+import type { FileEvent, TypeChecker, TypeCheckResult } from "./typecheck.ts";
 
 const QUEUE_CONCURRENCY = 4;
 const TYPECHECK_KEY = "typecheck";
+// Files whose change can move type errors anywhere in the project.
+const TYPECHECK_INPUT = /\.(vue|[cm]?[jt]sx?)$|(^|[/\\])tsconfig[^/\\]*\.json$/;
 
 /**
  * Orchestrates crawl + analyzers + cache and produces progressive snapshots:
@@ -26,7 +29,7 @@ const TYPECHECK_KEY = "typecheck";
  */
 export class AnalysisEngine {
   private host: AnalysisHost;
-  private typeCheckCommand: string[] | false;
+  private typeChecker: TypeChecker | null;
   private blame: boolean;
   private blameAliases: Record<string, string>;
   private facts = new FactStore();
@@ -45,16 +48,19 @@ export class AnalysisEngine {
   private inFlight: Promise<ComponentGraph> | null = null;
 
   // Project-wide type-check pass state (only used when enabled).
-  private typeErrors = new Map<string, number>();
+  private typeErrors = new Map<string, TypeErrorMessage[]>();
   private typeCheckState: AnalyzerState = "pending";
   private typeCheckError: string | undefined;
   private typeCheckDirty = true;
+  // Bumped on every checker swap: a pass started by a retired checker must not
+  // publish its (stale) result.
+  private typeCheckGeneration = 0;
 
   /**
    * @param host analysis capabilities (resolver, reader, git) injected by the
    *   caller (Vite adapter in the plugin, canned fixtures in tests).
-   * @param opts.typeCheckCommand argv for the project type-check pass, or
-   *   `false` to disable it (every node reported as typed). Default disabled.
+   * @param opts.typeChecker the project type-check pass, or `null` to disable
+   *   it (every node reported as typed). Default disabled.
    * @param opts.blame enable per-file `git blame` (LoC per author) on the
    *   background queue. Default disabled — no git runs and blame stays empty.
    * @param opts.blameAliases map raw blame author names to canonical display
@@ -63,20 +69,20 @@ export class AnalysisEngine {
   constructor(
     host: AnalysisHost,
     {
-      typeCheckCommand = false,
+      typeChecker = null,
       blame = false,
       blameAliases = {},
     }: {
-      typeCheckCommand?: string[] | false;
+      typeChecker?: TypeChecker | null;
       blame?: boolean;
       blameAliases?: Record<string, string>;
     } = {},
   ) {
     this.host = host;
-    this.typeCheckCommand = typeCheckCommand;
+    this.typeChecker = typeChecker;
     this.blame = blame;
     this.blameAliases = blameAliases;
-    if (typeCheckCommand === false) {
+    if (typeChecker === null) {
       this.typeCheckState = "ready";
       this.typeCheckDirty = false;
     }
@@ -87,21 +93,49 @@ export class AnalysisEngine {
   }
 
   /** Watcher hook: any project file change may alter facts and the graph. */
-  invalidateFile(file: string): void {
+  invalidateFile(file: string, event: FileEvent = "change"): void {
     this.graphDirty = true;
     this.facts.invalidateFile(file);
     // A script/component change can change type errors project-wide; schedule
     // a re-run (the scheduled dedup coalesces bursts into a single pass).
-    if (this.typeCheckCommand !== false && /\.(vue|[cm]?[jt]sx?)$/.test(file)) {
-      this.typeCheckDirty = true;
+    if (this.typeChecker) {
+      this.typeChecker.fileChanged(file, event);
+      if (TYPECHECK_INPUT.test(file)) {
+        this.typeCheckDirty = true;
+      }
     }
     this._version++;
   }
 
-  /** Stop launching queued work (dev server closed). */
+  /**
+   * Swap the type-check pass (the tool's TS 7.1 toggle). The previous checker
+   * is disposed and every node goes back to "pending" until the new checker's
+   * first pass lands; `null` disables the pass.
+   */
+  setTypeChecker(typeChecker: TypeChecker | null): void {
+    this.typeChecker?.dispose();
+    this.typeChecker = typeChecker;
+    this.typeCheckGeneration++;
+    this.typeErrors = new Map();
+    this.typeCheckError = undefined;
+    this.typeCheckState = typeChecker ? "pending" : "ready";
+    this.typeCheckDirty = typeChecker !== null;
+    this._version++;
+  }
+
+  /** One file's type errors from the last pass; `null` while none is known. */
+  typeErrorsOf(id: string): TypeErrorMessage[] | null {
+    if (!this.typeChecker || this.typeCheckState !== "ready") {
+      return null;
+    }
+    return this.typeErrors.get(id) ?? [];
+  }
+
+  /** Stop launching queued work and release the checker (dev server closed). */
   dispose(): void {
     this.disposed = true;
     this.queue.length = 0;
+    this.typeChecker?.dispose();
   }
 
   /**
@@ -169,6 +203,7 @@ export class AnalysisEngine {
       vue,
       full,
       autoImportManifests: this.autoImportManifests,
+      typeChecker: this.typeChecker?.info ?? { ts7: false },
     };
   }
 
@@ -196,22 +231,28 @@ export class AnalysisEngine {
    * pass; any invalidation during a run re-arms the dirty flag for the next.
    */
   private scheduleTypeCheck(): void {
-    const command = this.typeCheckCommand;
-    if (command === false || !this.typeCheckDirty || this.scheduled.has(TYPECHECK_KEY)) {
+    const checker = this.typeChecker;
+    if (!checker || !this.typeCheckDirty || this.scheduled.has(TYPECHECK_KEY)) {
       return;
     }
     this.typeCheckDirty = false;
+    const generation = this.typeCheckGeneration;
     this.enqueue(TYPECHECK_KEY, async () => {
-      const { counts, error } = await runTypeCheck(this.host, command);
-      if (error === undefined) {
-        this.typeErrors = counts;
-        this.typeCheckState = "ready";
-        this.typeCheckError = undefined;
-      } else {
-        this.typeErrors = new Map();
-        this.typeCheckState = "error";
-        this.typeCheckError = error;
+      let result: TypeCheckResult;
+      try {
+        result = await checker.check();
+      } catch (error) {
+        result = {
+          errors: new Map(),
+          error: error instanceof Error ? error.message : String(error),
+        };
       }
+      if (generation !== this.typeCheckGeneration) {
+        return; // the checker was swapped mid-pass; its successor runs next
+      }
+      this.typeErrors = result.errors;
+      this.typeCheckState = result.error === undefined ? "ready" : "error";
+      this.typeCheckError = result.error;
       this._version++;
     });
   }
@@ -253,8 +294,8 @@ export class AnalysisEngine {
     // Type errors flow from the project pass. `null` while pending/errored or
     // when disabled — the client treats null as "not yet known", never red.
     const typeErrors =
-      this.typeCheckState === "ready" && this.typeCheckCommand !== false
-        ? (this.typeErrors.get(id) ?? 0)
+      this.typeCheckState === "ready" && this.typeChecker
+        ? (this.typeErrors.get(id)?.length ?? 0)
         : null;
 
     const errors: FileFacts["errors"] = {};
