@@ -1,12 +1,6 @@
 import * as d3 from "d3";
-import type {
-  ComponentNode,
-  Graph,
-  MaintainabilityBreakdown,
-  MaintainabilityContributions,
-  MaintainabilityDriver,
-} from "../../../src/shared/types.ts";
-import { DISC_COLORS, DISC_GEOM, EDGE_STYLE, Scene } from "./gl.ts";
+import type { ComponentNode, Graph } from "../../../src/shared/types.ts";
+import { DISC_COLORS, DISC_GEOM, Scene } from "./gl.ts";
 import { INPUT_STRIDE, LayoutClient } from "./layout.ts";
 import { type Adjacency, buildAdjacency, type FocusDir, isolateSet } from "./select.ts";
 
@@ -16,8 +10,8 @@ import { type Adjacency, buildAdjacency, type FocusDir, isolateSet } from "./sel
  * scene and every graph interaction, and hands view-local readouts back
  * through a callback so the panel can render them.
  *
- * Rendering is WebGL2 (`./gl.ts`: rings, edges, halos, nodes as instanced
- * draws) with a Canvas2D overlay for text; the force layout runs off the main
+ * Rendering is WebGL2 (`./gl.ts`: rings, edges, focus glow, nodes, one draw
+ * call each) with a Canvas2D overlay for text; the force layout runs off the main
  * thread in Rust/WASM (`./layout.ts`). The main thread only rebuilds typed
  * arrays when the *styling* changes (filters, hover, search) — layout ticks
  * and pan/zoom never touch per-element state.
@@ -34,19 +28,6 @@ const GREEN = "#3fb950";
 const RED = "#f85149";
 // Neutral fill for files still being type-checked — never red-on-unknown.
 const NEUTRAL = "#8b949e";
-// Driver-highlight ring colours (mirror the panel's coloured dots). Mass is
-// the amber complexity accent, matching the panel's mass readout.
-const DRIVER_COLOR: Record<MaintainabilityDriver, string> = {
-  comprehension: "#58a6ff",
-  blast: "#a371f7",
-  mass: "#d29922",
-};
-// Driver-highlight ring geometry (user units): how far the ring extends past the
-// node edge, its stroke thickness, and the min contribution worth drawing.
-const HALO_OFFSET = 6;
-const HALO_STROKE = 2;
-const HALO_EPS = 0.03;
-
 type Rgb = readonly [number, number, number];
 const rgb = (hex: string): Rgb => {
   const v = Number.parseInt(hex.slice(1), 16);
@@ -198,50 +179,6 @@ export interface Readouts {
   };
 }
 
-/** One contributor row inside a change-cost driver (an import or a dependent). */
-export interface DetailContributor {
-  name: string;
-  /** Trailing muted annotation, e.g. `×0.42` or `128 LOC`. */
-  tail: string;
-  /**
-   * Provenance line (native tooltip): the dependent's shortest import path to
-   * this file plus the symbols crossing the final hop, or an import edge's
-   * crossing symbols — the greppable "why" behind the row.
-   */
-  why?: string;
-}
-
-/** One change-cost driver in the detail panel's breakdown. */
-export interface DetailDriver {
-  key: "comprehension" | "blast" | "mass" | "types" | "cycle";
-  label: string;
-  /** Swatch colour (mirrors the panel's coloured dots). */
-  color: string;
-  /** Share of this file's structural overhead, in percent (null for the type-debt and cycle rows). */
-  share: number | null;
-  /** Muted descriptive tail. */
-  meta: string;
-  /** Mechanical next step ("imports 12 volatile modules — invert or split"). */
-  action?: string;
-  /** Volatility ∈ [0,1] for the `blast` driver — surfaced separately so the panel can colour-code it. */
-  volatility?: number;
-  /** Weighted contributor rows (imports for coupling, dependents for blast). */
-  items: DetailContributor[];
-}
-
-/**
- * One shipped import cycle, preprocessed by the app shell for display and
- * isolation: members, a basename chain label, and the cut hint — the cycle
- * edge crossing the fewest symbols is the cheapest to sever.
- */
-export interface CycleInfo {
-  members: string[];
-  /** Display chain, e.g. `store.ts ↔ actions.ts`. */
-  label: string;
-  /** Cheapest edge to sever, or null when no symbol data narrows the choice. */
-  cut: { from: string; to: string; label: string } | null;
-}
-
 /**
  * Structured detail of the hovered or selected node, rendered by the sidebar's
  * bottom panel. Replaces the old alt-hover tooltip: the tooltip now carries only
@@ -263,18 +200,12 @@ export interface NodeDetail {
   ownStatus: string | null;
   height: number;
   loc: number;
-  cc: number;
   errors: number;
   /** Files that import this one ("X consume it"). */
   fanIn: number;
   /** Files this one imports ("consumes Y deps"). */
   fanOut: number;
   blame: { author: string; loc: number }[];
-  /**
-   * Change-cost breakdown: `null` until the score arrives; `atFloor` when the
-   * file adds no overhead; otherwise the per-driver rows.
-   */
-  breakdown: { atFloor: boolean; drivers: DetailDriver[] } | null;
   /** Whether this reflects a live hover or the current selection. */
   source: "hover" | "select";
 }
@@ -299,31 +230,10 @@ export interface GraphController {
    * rebuild the scene and relayout.
    */
   setGraph(graph: Graph): void;
-  /**
-   * Provide the FULL module graph + shipped cycles regardless of the shown
-   * view: the score runs on it, so breakdown contributor lists, ×vol tails and
-   * dependent paths must come from it too (in the `vue` view the current
-   * view's adjacency cannot add up to the server's numbers).
-   */
-  setFullGraph(full: Graph | null, cycles: CycleInfo[] | null): void;
   /** Reapply the persistent view controls without a relayout. */
   setControls(controls: Controls): void;
   /** Toggle a depth-row isolate (clears it when already active). */
   toggleDepth(height: number): void;
-  /** Isolate a node's supertree (its dependents) — the panel's hotspot-row click. */
-  focusDependents(id: string): void;
-  /** Isolate an explicit id set (the panel's cycle-row click). */
-  focusSet(ids: string[]): void;
-  /** Highlight a driver's per-node contribution as coloured rings (null clears). */
-  setDriverHighlight(
-    driver: MaintainabilityDriver | null,
-    contributions: MaintainabilityContributions | null,
-  ): void;
-  /** Update the per-node change-cost breakdown + volatility map for the detail panel and edge weights. */
-  setBreakdown(
-    breakdown: Record<string, MaintainabilityBreakdown> | null,
-    volatility: Record<string, number> | null,
-  ): void;
   /** Tear down the layout worker, listeners and canvases. */
   destroy(): void;
 }
@@ -340,8 +250,6 @@ interface RNode {
   kind: "vue" | "ts";
   /** Lines of code (prototype `size`). */
   size: number;
-  /** Cyclomatic complexity — script decision points + template branches. */
-  cc: number;
   /** Own type-error count (prototype `errors`). */
   errors: number;
   strictRed: boolean;
@@ -387,7 +295,6 @@ function toRNode(n: ComponentNode, index: number): RNode {
     group: n.group,
     kind: n.kind,
     size: n.loc ?? 1,
-    cc: n.cc ?? 0,
     errors: n.typeErrors ?? 0,
     strictRed: n.strictRed,
     analyzing: n.typeErrors === null && n.status.typecheck !== "ready",
@@ -515,33 +422,11 @@ export function initGraph(opts: InitOptions): GraphController {
   // Adjacency for hover (undirected), the import subtree ("down"/out) and the
   // supertree ("up"/inn). Rebuilt per graph; see ./select.ts for the contract.
   let ga: Adjacency = buildAdjacency([], []);
-  // Driver-highlight rings: the selected driver and the per-node contribution
-  // map that sets each ring's colour + opacity (null = no highlight).
-  let driver: MaintainabilityDriver | null = null;
-  let contrib: MaintainabilityContributions | null = null;
-  // Per-node change-cost breakdown for the detail panel (null until the score
-  // arrives), an id→node map for contributor lookups, and the current hover
-  // target that drives the tooltip + detail panel.
-  let breakdown: Record<string, MaintainabilityBreakdown> | null = null;
+  // id→node map for lookups, and the current hover target that drives the
+  // tooltip + detail panel.
   let byId = new Map<string, RNode>();
   let hovered: RNode | null = null;
   let dragging = false;
-
-  // Server-shipped churn-blended volatility per node id — the exact number
-  // the score charges per import, and therefore the visual weight of every
-  // drawn edge (by target). Null until the score arrives.
-  let volatility: Record<string, number> | null = null;
-  // FULL module-graph context (set independently of the shown view): the score
-  // runs on it, so the breakdown's contributor lists, ×vol tails and dependent
-  // paths read these — never the current view's adjacency.
-  let fullAdj: Adjacency = buildAdjacency([], []);
-  let fullNodes = new Map<string, { name: string; loc: number }>();
-  let fullEdgeInfo = new Map<
-    string,
-    { symbols?: string[]; via?: string[]; type?: boolean; lazy?: boolean }
-  >();
-  // Shipped import cycles, keyed per member for the detail panel's cycle row.
-  let cycleOf = new Map<string, CycleInfo>();
 
   // Click-to-isolate: ids reachable from the focused node. `dir` picks the walk
   // — "down" = its import subtree (what it uses), "up" = its supertree (what
@@ -596,36 +481,21 @@ export function initGraph(opts: InitOptions): GraphController {
     return out;
   }
 
-  // The visual weight of an edge is the exact number the score charges for it:
-  // the target's churn-blended volatility. Type-only and lazy edges charge
-  // no comprehension (§2), so they pin to the floor — the dashes explain
-  // why. Opacity is the primary channel ("a stable import is nearly free"
-  // renders as nearly invisible), width a secondary pop for heavy edges.
-  const linkWeight = (l: RLink): number =>
-    l.type || l.lazy ? 0 : (volatility?.[current!.nodes[l.t]!.id] ?? 0);
-
-  // Upload the visible edge set: endpoints, weight-derived width/opacity
-  // (highlighted opacity floored so trace mode stays usable), dash kind, and
-  // the per-node incidence lists hover uses.
+  // Upload the visible edge set: endpoints, dash kind, and the per-node
+  // incidence lists hover uses.
   function renderLinks(): void {
     if (!current) return;
     const { nodes, links } = current;
     const vis = visibleLinks();
     const m = vis.length;
     const ends = new Uint32Array(m * 2);
-    const style = new Float32Array(m * EDGE_STYLE);
     const dash = new Uint8Array(m);
     edgeHover = new Uint8Array(m);
     incidentStart = new Uint32Array(nodes.length + 1);
     for (let k = 0; k < m; k++) {
       const l = links[vis[k]!]!;
-      const w = linkWeight(l);
-      const opacity = 0.1 + 0.65 * w;
       ends[k * 2] = l.s;
       ends[k * 2 + 1] = l.t;
-      style[k * EDGE_STYLE] = 0.6 + 1.2 * w;
-      style[k * EDGE_STYLE + 1] = opacity;
-      style[k * EDGE_STYLE + 2] = Math.max(0.35, opacity);
       // `.link.lazy` is declared after `.link.type`, so lazy's dash wins.
       dash[k] = l.lazy ? 2 : l.type ? 1 : 0;
       incidentStart[l.s + 1]!++;
@@ -639,7 +509,7 @@ export function initGraph(opts: InitOptions): GraphController {
       incidentList[fill[ends[k * 2 + 1]!]!++] = k;
     }
     if (hovered) markIncident(hovered.index, 1);
-    scene.setEdges({ ends, style, dash, count: m });
+    scene.setEdges({ ends, dash, count: m });
     scene.setEdgeHover(edgeHover);
     scene.setEdgeMode(hovered !== null, controls.highlightLinks);
     requestFrame();
@@ -654,7 +524,7 @@ export function initGraph(opts: InitOptions): GraphController {
 
   // The tooltip is now a terse summary: filename, LOC, and the import links in
   // the "X consume it · consumes Y deps" form. Everything else (status, path,
-  // depth, blame, change-cost breakdown) lives in the sidebar detail panel.
+  // depth, blame) lives in the sidebar detail panel.
   function tooltipHtml(d: RNode): string {
     const slash = d.file.lastIndexOf("/");
     const fileBase = slash < 0 ? d.file : d.file.slice(slash + 1);
@@ -665,139 +535,6 @@ export function initGraph(opts: InitOptions): GraphController {
       `<br><span class="tip-p">${d.size} LOC</span>` +
       `<br><span class="tip-p">${fanIn} consume it · consumes ${fanOut} deps</span>`
     );
-  }
-
-  // Structured change-cost breakdown for the detail panel: which files drive
-  // THIS file's change-cost, and by how much. Authoritative overhead per driver
-  // comes from the server breakdown; the contributor lists (imports weighted by
-  // volatility, transitive dependents by LoC, per-dependent import paths) come
-  // from the FULL module graph — the graph the score ran on — whatever view is
-  // shown. Returns null until the score arrives.
-  function buildBreakdown(d: RNode): NodeDetail["breakdown"] {
-    if (!breakdown) return null;
-    const bd = breakdown[d.id];
-    const cycle = cycleOf.get(d.id) ?? null;
-    if (!bd && !cycle && d.errors === 0) return { atFloor: true, drivers: [] };
-    const nameOf = (id: string) => fullNodes.get(id)?.name ?? byId.get(id)?.name ?? id;
-    // Greppable provenance of one full-graph edge: the crossing symbols (and
-    // the barrel hop the resolution passed through), or the whole-module kind.
-    const whyOf = (from: string, to: string): string | undefined => {
-      const e = fullEdgeInfo.get(`${from}\n${to}`);
-      if (!e) return undefined;
-      if (e.symbols?.length) {
-        const via = e.via?.length ? ` (via ${e.via.map(nameOf).join(", ")})` : "";
-        return `imports ${e.symbols.join(", ")}${via}`;
-      }
-      return e.type ? "type-only import" : e.lazy ? "lazy (dynamic import)" : "whole-module import";
-    };
-    const drivers: DetailDriver[] = [];
-    const overhead = bd ? bd.comprehension + bd.blast + bd.mass : 0;
-    const share = (x: number) => (overhead > 0 ? Math.round((x / overhead) * 100) : 0);
-    if (bd && bd.comprehension > 0) {
-      const imports = [...(fullAdj.out.get(d.id) ?? [])]
-        .map((id) => ({ id, n: nameOf(id), w: volatility?.[id] ?? 0 }))
-        .sort((a, b) => b.w - a.w);
-      const volatile = imports.filter((r) => r.w >= 0.5).length;
-      drivers.push({
-        key: "comprehension",
-        label: "excess coupling",
-        color: DRIVER_COLOR.comprehension,
-        share: share(bd.comprehension),
-        meta: `${imports.length} imports, weighted ${bd.weightedFanout}`,
-        action: `imports ${volatile} volatile ${volatile === 1 ? "module" : "modules"} — invert or split`,
-        items: imports.map((r) => ({
-          name: r.n,
-          tail: `×${r.w.toFixed(2)}`,
-          why: whyOf(d.id, r.id),
-        })),
-      });
-    }
-    if (bd && bd.blast > 0) {
-      // One BFS over the full-graph importers gives every dependent AND its
-      // shortest import path back to this file: `toward` maps each dependent
-      // to its next hop toward the target.
-      const toward = new Map<string, string>();
-      const queue = [d.id];
-      const seen = new Set([d.id]);
-      while (queue.length) {
-        const v = queue.shift()!;
-        for (const u of fullAdj.inn.get(v) ?? []) {
-          if (!seen.has(u)) {
-            seen.add(u);
-            toward.set(u, v);
-            queue.push(u);
-          }
-        }
-      }
-      seen.delete(d.id);
-      const rows = [...seen]
-        .map((id) => ({ id, n: nameOf(id), loc: fullNodes.get(id)?.loc ?? 0 }))
-        .sort((a, b) => b.loc - a.loc);
-      const depLoc = rows.reduce((s, r) => s + r.loc, 0);
-      // "Why does `main` need attention if this changes?" — the shortest path
-      // plus the symbols crossing the final hop into this file.
-      const pathWhy = (id: string): string => {
-        const path: string[] = [id];
-        let cur = id;
-        while (cur !== d.id) {
-          cur = toward.get(cur)!;
-          path.push(cur);
-        }
-        const hop = path[path.length - 2]!;
-        const symbols = fullEdgeInfo.get(`${hop}\n${d.id}`)?.symbols;
-        const names = path.map(nameOf).join(" → ");
-        return symbols?.length ? `${names} — imports ${symbols.join(", ")}` : names;
-      };
-      drivers.push({
-        key: "blast",
-        label: "change blast",
-        color: DRIVER_COLOR.blast,
-        share: share(bd.blast),
-        meta:
-          `${rows.length} files (${depLoc} LOC, ${Math.round(bd.blastRadius * 100)}% of codebase) ` +
-          `depend on this`,
-        action: "volatile and widely imported — stabilize or split it",
-        volatility: bd.volatility,
-        items: rows.map((r) => ({ name: r.n, tail: `${r.loc} LOC`, why: pathWhy(r.id) })),
-      });
-    }
-    if (d.errors > 0) {
-      drivers.push({
-        key: "types",
-        label: "type errors",
-        color: RED,
-        share: null,
-        meta:
-          `${d.errors} own ${d.errors === 1 ? "error" : "errors"} — this file's flaws cost ` +
-          `full price (typed files pay a fraction, the compiler carries the rest)`,
-        action: `fix the ${d.errors} ${d.errors === 1 ? "error" : "errors"} here`,
-        items: [],
-      });
-    }
-    if (cycle) {
-      drivers.push({
-        key: "cycle",
-        label: "import cycle",
-        color: RED,
-        share: null,
-        meta: `${cycle.members.length} files: ${cycle.label}`,
-        action: cycle.cut ? `break ${cycle.cut.label}` : undefined,
-        items: [],
-      });
-    }
-    if (bd && bd.mass > 0) {
-      drivers.push({
-        key: "mass",
-        label: "complexity mass",
-        color: DRIVER_COLOR.mass,
-        share: share(bd.mass),
-        meta: `${d.cc} branches × ${d.size} lines — each branch costs more in a bigger file`,
-        action:
-          d.size > 300 ? "split the file — smaller files make every branch cheaper" : undefined,
-        items: [],
-      });
-    }
-    return { atFloor: drivers.length === 0, drivers };
   }
 
   // Assemble the full structured detail for the hovered/selected node.
@@ -828,12 +565,10 @@ export function initGraph(opts: InitOptions): GraphController {
       ownStatus,
       height: d.height,
       loc: d.size,
-      cc: d.cc,
       errors: d.errors,
       fanIn: ga.inn.get(d.id)?.size ?? 0,
       fanOut: ga.out.get(d.id)?.size ?? 0,
       blame,
-      breakdown: buildBreakdown(d),
       source,
     };
   }
@@ -931,74 +666,31 @@ export function initGraph(opts: InitOptions): GraphController {
     applyControls();
   }
 
-  // Reapply the persistent view controls: visibility, search, links, halos.
+  // Reapply the persistent view controls: visibility, search, links, glow.
   function applyControls(): void {
     computeSearchHits();
     paintNodes();
     renderLinks();
-    renderHalos();
+    renderGlow();
   }
 
-  // Driver-highlight rings: a coloured ring around each node — a translucent
-  // disc behind it (so only the annulus past the node shows) plus a crisp
-  // stroke, both at an opacity driven by the node's normalised contribution to
-  // the selected driver (with a floor so faint contributors stay visible).
-  // Hidden when no driver is selected or the contribution is negligible. The
-  // focused root (node click or hotspot-row click) gets a soft white glow in
-  // the same pass so it's findable among its isolated dependents/subtree.
-  function renderHalos(): void {
+  // The focused root (node click) gets a soft white glow behind it so it's
+  // findable among its isolated subtree. It stands in for the old node
+  // drop-shadow, so it dims with its node.
+  function renderGlow(): void {
     if (!current) return;
-    const cap = current.nodes.length + 1;
-    const index = new Uint32Array(cap);
-    const geom = new Float32Array(cap * DISC_GEOM);
-    const colors = new Uint8Array(cap * DISC_COLORS);
-    let count = 0;
-    const push = (
-      i: number,
-      r: number,
-      sw: number,
-      soft: number,
-      col: Rgb,
-      fa: number,
-      sa: number,
-    ) => {
-      index[count] = i;
-      geom.set([r, sw, soft], count * DISC_GEOM);
-      const fill = Math.round(fa * 255);
-      const stroke = Math.round(sa * 255);
-      colors.set(
-        [col[0], col[1], col[2], fill, col[0], col[1], col[2], stroke],
-        count * DISC_COLORS,
-      );
-      count++;
-    };
-    if (driver !== null && contrib !== null) {
-      const key = driver;
-      const data = contrib;
-      // Change blast rings are red for contrast (purple reads poorly on the dark
-      // canvas); the panel/legend keeps blast purple to stay distinct from types.
-      const col = rgb(key === "blast" ? RED : DRIVER_COLOR[key]);
-      for (const d of current.nodes) {
-        const v = data[d.id]?.[key] ?? 0;
-        if (v < HALO_EPS || isHidden(d)) continue;
-        push(
-          d.index,
-          radii[d.index]! + HALO_OFFSET,
-          HALO_STROKE,
-          0,
-          col,
-          v * 0.5,
-          Math.max(0.3, v),
-        );
-      }
-    }
-    // The glow stands in for the old node drop-shadow, so it dims with its node.
+    const index = new Uint32Array(1);
+    const geom = new Float32Array(DISC_GEOM);
+    const colors = new Uint8Array(DISC_COLORS);
     const root = focus ? byId.get(focus.root) : undefined;
-    if (root && !isHidden(root)) {
-      const a = 0.55 * (nodeDim[root.index] ? DIM : 1);
-      push(root.index, radii[root.index]!, 0, 6, WHITE_RGB, a, 0);
+    const shown = root !== undefined && !isHidden(root);
+    if (shown) {
+      index[0] = root.index;
+      geom.set([radii[root.index]!, 0, 6]);
+      const a = Math.round(0.55 * (nodeDim[root.index] ? DIM : 1) * 255);
+      colors.set([WHITE_RGB[0], WHITE_RGB[1], WHITE_RGB[2], a, 0, 0, 0, 0]);
     }
-    scene.setHalos({ index, geom, colors, count });
+    scene.setGlow({ index, geom, colors, count: shown ? 1 : 0 });
     requestFrame();
   }
 
@@ -1059,7 +751,7 @@ export function initGraph(opts: InitOptions): GraphController {
     });
     pickTree = null;
     // The focus glow follows its node's dimming.
-    if (focus) renderHalos();
+    if (focus) renderGlow();
     requestFrame();
   }
 
@@ -1375,79 +1067,11 @@ export function initGraph(opts: InitOptions): GraphController {
     refresh();
   }
 
-  function setDriverHighlight(
-    d: MaintainabilityDriver | null,
-    contributions: MaintainabilityContributions | null,
-  ): void {
-    driver = d;
-    contrib = contributions;
-    renderHalos();
-  }
-
-  function setBreakdown(
-    next: Record<string, MaintainabilityBreakdown> | null,
-    vol: Record<string, number> | null,
-  ): void {
-    breakdown = next;
-    volatility = vol;
-    // The breakdown collapsible fills in once the score arrives — and edge
-    // weights re-style, since an edge's weight is its target's shipped
-    // volatility (0 until then).
-    renderLinks();
-    emitDetail();
-  }
-
   // Toggle a node-focus isolate; `refresh()` reapplies visibility + link overlay.
   function isolate(id: string, dir: FocusDir): void {
     const already = focus !== null && focus.root === id && focus.dir === dir;
     focus = already ? null : { root: id, dir, set: isolateSet(id, dir, ga) };
     refresh();
-    emitDetail();
-  }
-
-  // Panel hotspot-row click: isolate a node's dependents (its supertree), just
-  // like shift-clicking it. Ignored when the id isn't a node in the current
-  // graph view (e.g. a `.ts` hotspot while the `.vue`-only graph is shown).
-  function focusDependents(id: string): void {
-    if (!ga.out.has(id)) return;
-    isolate(id, "up");
-  }
-
-  // Panel cycle-row click: isolate exactly the cycle's members (whichever are
-  // nodes in the current view). The app shell switches the view to the module
-  // graph first when needed.
-  function focusSet(ids: string[]): void {
-    const present = ids.filter((id) => byId.has(id));
-    if (present.length === 0) return;
-    focus = { root: present[0]!, dir: "down", set: new Set(present) };
-    depthFocus = null;
-    refresh();
-    emitDetail();
-  }
-
-  // Full module-graph context for the breakdown + cycle rows (see the
-  // GraphController doc). Cheap to rebuild: maps only, no DOM.
-  function setFullGraph(full: Graph | null, cycles: CycleInfo[] | null): void {
-    if (!full) {
-      fullAdj = buildAdjacency([], []);
-      fullNodes = new Map();
-      fullEdgeInfo = new Map();
-      cycleOf = new Map();
-      return;
-    }
-    fullAdj = buildAdjacency(
-      full.nodes.map((n) => n.id),
-      full.edges.map((e) => ({ source: e.from, target: e.to })),
-    );
-    fullNodes = new Map(full.nodes.map((n) => [n.id, { name: n.name, loc: n.loc ?? 0 }]));
-    fullEdgeInfo = new Map(full.edges.map((e) => [`${e.from}\n${e.to}`, e]));
-    cycleOf = new Map();
-    for (const info of cycles ?? []) {
-      for (const member of info.members) {
-        cycleOf.set(member, info);
-      }
-    }
-    // The detail panel's breakdown reads all of the above.
     emitDetail();
   }
 
@@ -1544,13 +1168,8 @@ export function initGraph(opts: InitOptions): GraphController {
 
   return {
     setGraph,
-    setFullGraph,
     setControls,
     toggleDepth,
-    focusDependents,
-    focusSet,
-    setDriverHighlight,
-    setBreakdown,
     destroy,
   };
 }

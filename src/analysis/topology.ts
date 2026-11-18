@@ -15,7 +15,6 @@ import type { BlameSummary, ComponentEdge, ComponentNode, Graph } from "../share
 export interface FileFacts {
   kind: "vue" | "ts";
   loc: number | null;
-  cc: number | null;
   blame: BlameSummary | null;
   typeErrors: number | null;
   status: ComponentNode["status"];
@@ -238,7 +237,6 @@ export function makeGraph(
       group: groupOf(id, root),
       kind: fact.kind,
       loc: fact.loc,
-      cc: fact.cc,
       height: heights.get(id) ?? 0,
       strictRed: strictRed.has(id),
       typeErrors: fact.typeErrors,

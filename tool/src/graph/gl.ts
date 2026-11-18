@@ -1,5 +1,5 @@
 /**
- * WebGL2 scene for the radial graph: depth rings, import edges, driver halos
+ * WebGL2 scene for the radial graph: depth rings, import edges, the focus glow
  * and nodes — one draw call per layer. Node positions live in an RG32F
  * texture every layer fetches by node index, so a layout tick is one texture
  * upload and pan/zoom is a uniform change: no per-element CPU work, whatever
@@ -28,8 +28,6 @@ export interface View {
 export const DISC_GEOM = 3;
 /** Bytes per disc in `DiscData.colors`: fill RGBA then stroke RGBA (straight alpha). */
 export const DISC_COLORS = 8;
-/** Floats per edge in `EdgeData.style`: width, opacity, highlighted opacity. */
-export const EDGE_STYLE = 3;
 
 export interface DiscData {
   /** Node index per disc (centre fetched from the position texture). */
@@ -42,7 +40,6 @@ export interface DiscData {
 export interface EdgeData {
   /** Node-index pairs per edge: importer, imported. */
   ends: Uint32Array;
-  style: Float32Array;
   /** Dash kind per edge: 0 solid, 1 type-only, 2 lazy. */
   dash: Uint8Array;
   count: number;
@@ -147,7 +144,7 @@ void main() {
 `;
 
 const EDGE_VS = `${HEAD}
-uniform highp sampler2D uEdge;   // per edge: (src, dst, width, opacity), (hl opacity, dash, -, -)
+uniform highp sampler2D uEdge;   // per edge: (src, dst, dash, -)
 uniform highp usampler2D uHover; // per edge: 1 = incident to the hovered node
 uniform bool uHovering; // a node is hovered: incident edges highlight, the rest dim
 uniform bool uAllHl;    // "highlight links": every edge in the hover colour
@@ -155,6 +152,9 @@ uniform bool uAllHl;    // "highlight links": every edge in the hover colour
 const vec2 CORNER[6] = vec2[6](vec2(0, -1), vec2(1, -1), vec2(0, 1), vec2(0, 1), vec2(1, -1), vec2(1, 1));
 const vec3 BASE = vec3(0.188, 0.212, 0.239); // #30363d
 const vec3 HL = vec3(0.345, 0.651, 1.0);     // #58a6ff
+const float WIDTH = 0.6;       // stroke width, user units
+const float OPACITY = 0.1;     // muted edge
+const float HL_OPACITY = 0.35; // highlighted edge
 out float vAlong;
 out float vSide;
 out float vHalf;
@@ -164,24 +164,23 @@ flat out int vDash;
 void main() {
   int e = gl_VertexID / 6;
   vec2 corner = CORNER[gl_VertexID % 6];
-  vec4 e0 = texelFetch(uEdge, texel(e * 2), 0);
-  vec4 e1 = texelFetch(uEdge, texel(e * 2 + 1), 0);
+  vec4 e0 = texelFetch(uEdge, texel(e), 0);
   bool incident = texelFetch(uHover, texel(e), 0).r == 1u;
   vec2 a = nodePos(int(e0.x));
   vec2 b = nodePos(int(e0.y));
   vec2 d = b - a;
   float len = length(d);
   vec2 dir = len > 0.0 ? d / len : vec2(1.0, 0.0);
-  float half_ = max(e0.z * 0.5, uPx * 0.5);
+  float half_ = max(WIDTH * 0.5, uPx * 0.5);
   vAlong = corner.x * len;
   // Quad hugs the stroke plus its half-pixel coverage ramp — edges are
   // fill-rate bound, so every extra pixel of width costs.
   vSide = corner.y * (half_ + uPx * 0.5);
   vHalf = half_;
-  vCov = min(1.0, e0.z / uPx);
-  vDash = int(e1.y);
+  vCov = min(1.0, WIDTH / uPx);
+  vDash = int(e0.z);
   bool hl = uHovering ? incident : uAllHl;
-  float op = uHovering && !incident ? 0.04 : (hl ? e1.x : e0.w);
+  float op = uHovering && !incident ? 0.04 : (hl ? HL_OPACITY : OPACITY);
   vColor = vec4(hl ? HL : BASE, op);
   gl_Position = toClip(mix(a, b, corner.x) + vec2(-dir.y, dir.x) * vSide);
 }
@@ -294,7 +293,7 @@ export class Scene {
   private readonly posTex: WebGLTexture;
   private posStage = new Float32Array(0);
   private readonly rings: Layer;
-  private readonly halos: Layer;
+  private readonly glow: Layer;
   private readonly nodes: Layer;
   private readonly edges: Layer;
   private readonly rgba32f: Format;
@@ -334,7 +333,7 @@ export class Scene {
     this.posTex = this.texture();
     const layer = (): Layer => ({ data: this.texture(), aux: this.texture(), count: 0 });
     this.rings = layer();
-    this.halos = layer();
+    this.glow = layer();
     this.nodes = layer();
     this.edges = layer();
     gl.pixelStorei(gl.UNPACK_ALIGNMENT, 1);
@@ -436,29 +435,22 @@ export class Scene {
     this.setDiscs(this.rings, data);
   }
 
-  setHalos(data: DiscData): void {
-    this.setDiscs(this.halos, data);
+  /** Soft discs drawn between the edges and the nodes (the focus glow). */
+  setGlow(data: DiscData): void {
+    this.setDiscs(this.glow, data);
   }
 
   setNodes(data: DiscData): void {
     this.setDiscs(this.nodes, data);
   }
 
-  /** Uploads edge geometry/style; the caller follows with `setEdgeHover`. */
+  /** Uploads edge endpoints and dashes; the caller follows with `setEdgeHover`. */
   setEdges(data: EdgeData): void {
-    const packed = new Float32Array(data.count * 8);
+    const packed = new Float32Array(data.count * 4);
     for (let k = 0; k < data.count; k++) {
-      packed.set(
-        [
-          data.ends[k * 2]!,
-          data.ends[k * 2 + 1]!,
-          data.style[k * EDGE_STYLE]!,
-          data.style[k * EDGE_STYLE + 1]!,
-          data.style[k * EDGE_STYLE + 2]!,
-          data.dash[k]!,
-        ],
-        k * 8,
-      );
+      packed[k * 4] = data.ends[k * 2]!;
+      packed[k * 4 + 1] = data.ends[k * 2 + 1]!;
+      packed[k * 4 + 2] = data.dash[k]!;
     }
     this.upload(this.edges.data, this.rgba32f, 4, packed);
     this.edges.count = data.count;
@@ -587,7 +579,7 @@ export class Scene {
     common(this.discU);
     gl.uniform1i(this.discU.uGeom!, 1);
     gl.uniform1i(this.discU.uColor!, 2);
-    draw(this.halos, 6);
+    draw(this.glow, 6);
     draw(this.nodes, 6);
     gl.bindVertexArray(null);
   }

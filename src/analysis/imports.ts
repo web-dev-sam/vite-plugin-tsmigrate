@@ -45,8 +45,8 @@ export type ExportRef =
   | { kind: "local"; exportName: string; local: string | null };
 
 /**
- * Statically-observed usage of one `import * as local from source` binding
- * (docs/maintainability-score.md "The graph"). `members` lists the member names read via
+ * Statically-observed usage of one `import * as local from source` binding.
+ * `members` lists the member names read via
  * static access (`ns.X`, `ns?.X`, `ns["X"]`, `ns.X` in type positions);
  * `members: null` means narrowing is unsafe and `cause` names why:
  *
@@ -104,75 +104,6 @@ function langOf(filename: string): "ts" | "tsx" | "js" | "jsx" {
     return "jsx";
   }
   return /\.(?:c|m)?js$/.test(filename) ? "js" : "ts";
-}
-
-// AST node types that each add one decision point (a branch) to cyclomatic
-// complexity. `SwitchCase` (non-default) and short-circuit `LogicalExpression`
-// are handled separately since they need a field check.
-const DECISION_NODES = new Set([
-  "IfStatement",
-  "ConditionalExpression",
-  "ForStatement",
-  "ForInStatement",
-  "ForOfStatement",
-  "WhileStatement",
-  "DoWhileStatement",
-  "CatchClause",
-]);
-
-/**
- * Cyclomatic complexity of a source: the number of decision points (branches).
- * Counts `if`, `?:`, every loop, `catch`, each non-default `case`, and each
- * short-circuit operator (`&&`, `||`, `??`) in the oxc AST. This is the *shape*
- * the LoC count cannot see — a 40-branch file and a flat file of equal length
- * weigh the same by LoC but not here. Script only — SFC template branching is
- * counted separately by `templateBranches`. Unparseable → 0.
- *
- * Iterative walk (an explicit stack) so a deeply nested file cannot overflow.
- */
-export function cyclomaticComplexity(code: string, filename: string): number {
-  let count = 0;
-  try {
-    const { program } = parseSync(filename, code, { lang: langOf(filename) });
-    const stack: unknown[] = [program];
-    while (stack.length > 0) {
-      const node = stack.pop();
-      if (Array.isArray(node)) {
-        for (const child of node) {
-          stack.push(child);
-        }
-        continue;
-      }
-      if (!node || typeof node !== "object") {
-        continue;
-      }
-      const record = node as Record<string, unknown>;
-      const type = record.type;
-      if (typeof type === "string") {
-        if (DECISION_NODES.has(type)) {
-          count++;
-        } else if (type === "SwitchCase") {
-          if (record.test != null) {
-            count++;
-          }
-        } else if (type === "LogicalExpression") {
-          const op = record.operator;
-          if (op === "&&" || op === "||" || op === "??") {
-            count++;
-          }
-        }
-      }
-      for (const key in record) {
-        const value = record[key];
-        if (value && typeof value === "object") {
-          stack.push(value);
-        }
-      }
-    }
-  } catch {
-    // Unparseable source has no measurable complexity.
-  }
-  return count;
 }
 
 /**
@@ -534,34 +465,4 @@ export function isTypedModule(filename: string, code: string): boolean {
     return true;
   }
   return TS_EXTS.some((ext) => clean.endsWith(ext));
-}
-
-// Template branch points: each `v-if`/`v-else-if`/`v-for`/`v-show` binding is
-// one decision the reader must trace (`v-else` is the arm of its `v-if`, not
-// a new decision). Matched as attributes (`=` required) so prose mentioning a
-// directive doesn't count.
-const TEMPLATE_BRANCH_RE = /\bv-(?:if|else-if|for|show)\s*=/g;
-
-/**
- * Branch points in an SFC's `<template>` markup — the decisions
- * `cyclomaticComplexity` cannot see because only `<script>` blocks are
- * parsed. A `v-if`-dense component with a flat script is real branching load;
- * the maintainability score adds these to the file's cc. Counted over the
- * outermost template block (nested `<template #slot>` markup is inside it).
- */
-export function templateBranches(sfc: string): number {
-  const open = sfc.match(/<template[^>]*>/i);
-  if (!open || open.index === undefined) {
-    return 0;
-  }
-  const start = open.index + open[0].length;
-  const end = sfc.lastIndexOf("</template>");
-  if (end <= start) {
-    return 0;
-  }
-  let count = 0;
-  for (const _ of sfc.slice(start, end).matchAll(TEMPLATE_BRANCH_RE)) {
-    count++;
-  }
-  return count;
 }

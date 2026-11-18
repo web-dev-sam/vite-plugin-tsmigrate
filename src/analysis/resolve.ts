@@ -13,7 +13,7 @@ import type { ModuleId, SymbolName, Terminality } from "./symbols.ts";
  * the module graph also every locally-defined export.
  *
  * Correctness rules carried by this extraction (both latent in the old
- * crawl code and load-bearing once the score consumes the module graph):
+ * crawl code and load-bearing for the symbol-resolved module graph):
  *
  * - **`export *` never forwards `default`** (ESM semantics) — the star
  *   fallback is skipped for the name "default".

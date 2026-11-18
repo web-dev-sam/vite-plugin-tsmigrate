@@ -1,11 +1,11 @@
 <script setup lang="ts">
-import { computed, nextTick, onMounted, onUnmounted, reactive, ref, shallowRef, watch } from "vue";
-import type { ComponentGraph, Diagnostics, MaintainabilityDriver } from "../../src/shared/types.ts";
+import { computed, onMounted, onUnmounted, reactive, ref, shallowRef, watch } from "vue";
+import type { ComponentGraph, Diagnostics } from "../../src/shared/types.ts";
 import { fetchDiagnostics, fetchGraph, fetchSearch } from "./api/client.ts";
 import ControlPanel from "./components/ControlPanel.vue";
 import GraphChart from "./components/GraphChart.vue";
 import SourceModal from "./components/SourceModal.vue";
-import type { Controls, CycleInfo, NodeDetail, Readouts } from "./graph/render.ts";
+import type { Controls, NodeDetail, Readouts } from "./graph/render.ts";
 
 /**
  * Root of the dev tool. Owns the live data lifecycle (progressive polling of
@@ -90,61 +90,11 @@ watch(
   { immediate: true },
 );
 
-// Shipped import cycles preprocessed for the panel + renderer: display label
-// and the cut hint — the internal value edge crossing the fewest symbols is
-// the cheapest to sever (type-only edges are not what holds a cycle together).
-const cycleInfos = computed<CycleInfo[]>(() => {
-  const g = graph.value;
-  if (!g) return [];
-  const baseOf = (id: string) => id.slice(id.lastIndexOf("/") + 1);
-  return g.maintainability.cycles.map((members) => {
-    const set = new Set(members);
-    let cut: CycleInfo["cut"] = null;
-    let best = Infinity;
-    for (const e of g.full.edges) {
-      if (e.type || !set.has(e.from) || !set.has(e.to)) continue;
-      const n = e.symbols?.length ?? Infinity;
-      if (n < best) {
-        best = n;
-        const count = n === Infinity ? "whole module" : `${n} ${n === 1 ? "symbol" : "symbols"}`;
-        cut = { from: e.from, to: e.to, label: `${baseOf(e.from)} → ${baseOf(e.to)} (${count})` };
-      }
-    }
-    return { members, label: members.map(baseOf).join(" ↔ "), cut };
-  });
-});
-
 const chart = ref<InstanceType<typeof GraphChart> | null>(null);
 
 // The node whose source the modal is showing (null = closed). Set on a
 // Ctrl/Cmd-click on a node in the chart; the modal fetches + highlights by id.
 const source = ref<{ id: string; file: string } | null>(null);
-
-// The driver whose per-node contribution the graph highlights as rings
-// (null = off). Toggled by clicking a driver row in the panel.
-const activeDriver = ref<MaintainabilityDriver | null>(null);
-function toggleDriver(d: MaintainabilityDriver) {
-  activeDriver.value = activeDriver.value === d ? null : d;
-}
-
-// Actionability contract (§9): the score's hotspots and cycles live in the
-// FULL module graph, but the default view is `.vue`-only. Clicking one must
-// never silently no-op — switch the view on first, then focus.
-async function focusNode(id: string) {
-  if (!view.includeTs && graph.value && !graph.value.vue.nodes.some((n) => n.id === id)) {
-    view.includeTs = true;
-    await nextTick();
-  }
-  chart.value?.focusDependents(id);
-}
-async function focusCycle(members: string[]) {
-  const inVue = (id: string) => graph.value?.vue.nodes.some((n) => n.id === id) ?? false;
-  if (!view.includeTs && !members.every(inVue)) {
-    view.includeTs = true;
-    await nextTick();
-  }
-  chart.value?.focusSet(members);
-}
 
 let timer: ReturnType<typeof setTimeout> | undefined;
 let stopped = false;
@@ -216,13 +166,7 @@ onUnmounted(() => {
     v-if="activeGraph"
     ref="chart"
     :graph="activeGraph"
-    :full-graph="graph?.full ?? null"
-    :cycles="cycleInfos"
     :controls="controls"
-    :driver="activeDriver"
-    :contributions="graph?.maintainability.contributions ?? null"
-    :breakdown="graph?.maintainability.breakdown ?? null"
-    :volatility="graph?.maintainability.volatility ?? null"
     @readouts="readouts = $event"
     @open-source="source = $event"
     @node-detail="nodeDetail = $event"
@@ -245,16 +189,9 @@ onUnmounted(() => {
     :readouts="readouts"
     :header="header"
     :ripgrep="ripgrep"
-    :maintainability="graph?.maintainability ?? null"
-    :coverage="graph?.coverage ?? null"
-    :active-driver="activeDriver"
     :node-detail="nodeDetail"
-    :cycles="cycleInfos"
     :has-vue="hasVue"
     @depth-click="chart?.toggleDepth($event)"
-    @focus-node="focusNode($event)"
-    @cycle-click="focusCycle($event)"
-    @driver-click="toggleDriver($event)"
   />
 
   <p
@@ -264,15 +201,14 @@ onUnmounted(() => {
     {{ error }}
   </p>
 
-  <!-- §12 blind-spot banner: auto-imported bindings have no import statements,
-       so their edges are missing and blast radius reads falsely LOW. -->
+  <!-- Blind-spot banner: auto-imported bindings have no import statements, so
+       their edges are missing from the graph. -->
   <p
     v-if="graph?.autoImportManifests.length"
     class="fixed top-3 right-3 max-w-110 rounded-md border border-warn/50 bg-panel/95 px-3 py-2 text-xs text-warn"
     :title="graph.autoImportManifests.join('\n')"
   >
-    auto-imports detected — some bindings are invisible to the graph; coupling and blast radius are
-    under-reported
+    auto-imports detected — some bindings are invisible to the graph; their import edges are missing
   </p>
 
   <SourceModal :node-id="source?.id ?? null" :file="source?.file ?? null" @close="source = null" />

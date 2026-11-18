@@ -1,11 +1,6 @@
 <script setup lang="ts">
 import { computed, ref } from "vue";
-import type {
-  CoverageSummary,
-  Maintainability,
-  MaintainabilityDriver,
-} from "../../../src/shared/types.ts";
-import type { CycleInfo, DepthRow, Mode, NodeDetail, Readouts } from "../graph/render.ts";
+import type { DepthRow, Mode, NodeDetail, Readouts } from "../graph/render.ts";
 import NodeDetailPanel from "./NodeDetailPanel.vue";
 import Checkbox from "../ui/Checkbox.vue";
 import Collapsible from "../ui/Collapsible.vue";
@@ -30,24 +25,13 @@ defineProps<{
   header: { complete: boolean; appUrl: string | null; projectName: string | null };
   /** `false` disables the content-search bar (ripgrep binary not found). */
   ripgrep: boolean;
-  /** Whole-graph maintainability score (over the full module graph). */
-  maintainability: Maintainability | null;
-  /** Crawl scope: graph vs. total source files/LoC, with the unreached list (null until the graph arrives). */
-  coverage: CoverageSummary | null;
-  /** The driver whose per-node contribution the graph is highlighting (null = none). */
-  activeDriver: MaintainabilityDriver | null;
   /** Detail of the hovered/selected graph node — populates the bottom section (null hides it). */
   nodeDetail: NodeDetail | null;
-  /** Shipped import cycles (largest first), preprocessed with cut hints. */
-  cycles: CycleInfo[];
   /** Whether the project has any `.vue` components (gates the vue-only toggle). */
   hasVue: boolean;
 }>();
 const emit = defineEmits<{
   depthClick: [height: number];
-  focusNode: [id: string];
-  cycleClick: [members: string[]];
-  driverClick: [driver: MaintainabilityDriver];
 }>();
 
 const mode = defineModel<Mode>("mode", { required: true });
@@ -107,54 +91,6 @@ function depthTitle(d: DepthRow): string {
   );
 }
 
-const pct = (n: number) => (n * 100).toFixed(0);
-
-const dirOf = (f: string): string => f.slice(0, f.lastIndexOf("/") + 1);
-const baseOf = (f: string): string => f.slice(f.lastIndexOf("/") + 1);
-// Tooltip text around the (colour-coded) volatility value: one string each
-// side so the formatter can't wedge stray whitespace between the segments.
-function hotspotMetaPre(h: Maintainability["hotspots"][number]): string {
-  return (
-    ` · ${h.loc} LoC · ${h.cc} branches · imports ${h.fanOut} · imported by ${h.fanIn}` +
-    ` · volatility `
-  );
-}
-function hotspotMetaPost(h: Maintainability["hotspots"][number]): string {
-  return (
-    ` · blast radius ${pct(h.blastRadius)}% of the codebase` +
-    `${h.inCycle ? " · in a cycle" : ""}. Click to isolate its dependents.`
-  );
-}
-
-// Share of the codebase's total overhead this hotspot causes — the visible
-// sort key of the hotspot list (rows are sorted by cost − loc, descending).
-function dragShare(h: Maintainability["hotspots"][number], m: Maintainability): string {
-  const total = m.costLoc - m.floorLoc;
-  if (total <= 0) {
-    return "0%";
-  }
-  const p = Math.round(((h.cost - h.loc) / total) * 100);
-  return p < 1 ? "<1%" : `${p}%`;
-}
-
-// Volatility ∈ [0,1]: low = stable (green), high = change-prone (red).
-function volatilityTone(v: number): string {
-  if (v < 0.34) {
-    return "text-green";
-  }
-  return v < 0.67 ? "text-warn" : "text-red";
-}
-
-// Score grade on the criterion-referenced scale: a typical production app
-// sits at 30 (amber starts there), green is reserved for genuinely
-// well-factored codebases, red is below typical. Negatives render red.
-function scoreTone(score: number): string {
-  if (score >= 70) {
-    return "text-green";
-  }
-  return score >= 30 ? "text-warn" : "text-red";
-}
-
 // The two stacked sections resize by dragging the divider. The bottom (detail)
 // section owns an explicit pixel height; the top settings section takes the
 // remaining flex space. Height is clamped to keep both sections usable.
@@ -208,225 +144,7 @@ function startResize(e: PointerEvent) {
         </p>
       </header>
 
-      <Collapsible v-if="maintainability" title="maintainability" flush :default-open="false">
-        <template #actions>
-          <Tooltip
-            content="Criterion-referenced: 100 means every change costs only the reading; a typical production Vue app sits around 30 (deliberately not a passing grade); negatives are genuine disasters. Typed code discounts its flaws — the compiler carries re-verification. Measured over the full module graph — see docs/maintainability-score.md."
-          >
-            <span
-              class="text-2xl font-semibold tabular-nums"
-              :class="scoreTone(maintainability.score)"
-            >
-              {{ maintainability.score }}<span class="text-sm font-normal text-muted">/100</span>
-            </span>
-          </Tooltip>
-        </template>
-
-        <!-- Structural overhead drivers: excess coupling | change blast | complexity mass. -->
-        <Tooltip
-          content="What makes a change cost more than just reading the file: too many volatile imports, ripple from churning files that lots of code depends on, and branchy logic buried in big files. The bar shows how much each one adds."
-        >
-          <div class="mt-2.5 flex h-1.5 overflow-hidden rounded-full bg-border/60">
-            <div
-              class="bg-accent"
-              :style="{ width: pct(maintainability.drivers.comprehension) + '%' }"
-            />
-            <div class="bg-purple" :style="{ width: pct(maintainability.drivers.blast) + '%' }" />
-            <div class="bg-warn" :style="{ width: pct(maintainability.drivers.mass) + '%' }" />
-          </div>
-        </Tooltip>
-
-        <div class="mt-3 space-y-1.5">
-          <Tooltip
-            content="Files that import too many other modules. A handful of imports is fine; this only counts files that pull in far more than usual — and importing stable things like icons barely counts."
-          >
-            <StatRow
-              class="-mx-1 cursor-pointer rounded px-1 transition-colors hover:bg-border/40"
-              :class="{ 'bg-border/60': activeDriver === 'comprehension' }"
-              @click="emit('driverClick', 'comprehension')"
-            >
-              <template #label>
-                <span class="inline-block size-2 rounded-full bg-accent" />excess coupling
-              </template>
-              {{ pct(maintainability.drivers.comprehension) }}%
-            </StatRow>
-          </Tooltip>
-          <Tooltip
-            content="How far a change to this file spreads. High only when the file really changes (measured from git history as deleted lines per month, floored by a structural estimate) and is widely imported — many files then need re-checking. A stable foundation stays cheap however popular it is."
-          >
-            <StatRow
-              class="-mx-1 cursor-pointer rounded px-1 transition-colors hover:bg-border/40"
-              :class="{ 'bg-border/60': activeDriver === 'blast' }"
-              @click="emit('driverClick', 'blast')"
-            >
-              <template #label>
-                <span class="inline-block size-2 rounded-full bg-purple" />change blast
-              </template>
-              {{ pct(maintainability.drivers.blast) }}%
-            </StatRow>
-          </Tooltip>
-          <Tooltip
-            content="Branch-dense logic in big files: every decision point costs more the bigger the file it's buried in. Flat files (prose, plain declarations) cost nothing however long they are — splitting a god file genuinely lowers this."
-          >
-            <StatRow
-              class="-mx-1 cursor-pointer rounded px-1 transition-colors hover:bg-border/40"
-              :class="{ 'bg-border/60': activeDriver === 'mass' }"
-              @click="emit('driverClick', 'mass')"
-            >
-              <template #label>
-                <span class="inline-block size-2 rounded-full bg-warn" />complexity mass
-              </template>
-              {{ pct(maintainability.drivers.mass) }}%
-            </StatRow>
-          </Tooltip>
-          <div
-            v-if="maintainability.cycleLoc > 0 || maintainability.typeHealth !== null"
-            class="border-t border-border/60"
-          />
-          <Tooltip
-            v-if="maintainability.cycleLoc > 0"
-            content="Code stuck in import cycles: files that import each other in a loop, so you can't read, test, or change one on its own."
-          >
-            <StatRow>
-              <template #label><span class="text-red">↻</span>in cycles</template>
-              {{ pct(maintainability.cycleLoc) }}% LoC
-            </StatRow>
-          </Tooltip>
-          <Tooltip
-            v-if="maintainability.churnCoverage !== null"
-            content="How much of the graph (by LoC) has usable git history behind its volatility. The rest falls back to a structural estimate — the score still works, but it can't see real churn there (shallow clones and fresh repos read low)."
-          >
-            <StatRow>
-              <template #label><span class="text-muted">⟳</span>churn measured</template>
-              {{ pct(maintainability.churnCoverage) }}% LoC
-            </StatRow>
-          </Tooltip>
-          <Tooltip
-            v-if="maintainability.typeHealth !== null"
-            content="How much of the codebase, by lines of code, is free of type errors — the migration's headline progress readout."
-          >
-            <StatRow>
-              <template #label><Dot tone="green" />typed</template>
-              {{ (maintainability.typeHealth * 100).toFixed(1) }}% LoC
-            </StatRow>
-          </Tooltip>
-        </div>
-
-        <!-- Highest-cost files: click a row to open its source. -->
-        <div v-if="maintainability.hotspots.length" class="mt-3">
-          <div
-            class="mb-1 flex items-center justify-between px-2 text-xs font-medium tracking-wide text-muted uppercase"
-          >
-            <span>hotspots</span>
-            <Tooltip
-              content="Sorted by score drag — how much each file adds to the change cost beyond just reading it. The % is the file's share of the codebase's total overhead, so fixing the top row buys the most points. Hover a row for its stats (volatility, blast radius, branches)."
-            >
-              <span>score drag</span>
-            </Tooltip>
-          </div>
-          <table class="w-full border-collapse text-xs">
-            <tbody>
-              <Tooltip
-                v-for="h in maintainability.hotspots.slice(0, 6)"
-                :key="h.id"
-                as="tr"
-                class="cursor-pointer transition-colors hover:[&>td]:text-fg"
-                @click="emit('focusNode', h.id)"
-              >
-                <template #content
-                  ><span class="text-muted">{{ dirOf(h.file) }}</span
-                  ><span class="text-purple">{{ baseOf(h.file) }}</span
-                  >{{ hotspotMetaPre(h)
-                  }}<span :class="volatilityTone(h.volatility)">{{ h.volatility.toFixed(2) }}</span
-                  >{{ hotspotMetaPost(h) }}</template
-                >
-                <td class="max-w-[240px] truncate py-0.5 pl-2 first:rounded-l">
-                  <span v-if="h.inCycle" class="text-red">↻ </span>{{ baseOf(h.file) }}
-                </td>
-                <td class="py-0.5 pr-2 text-right tabular-nums text-muted last:rounded-r">
-                  {{ dragShare(h, maintainability) }}
-                </td>
-              </Tooltip>
-            </tbody>
-          </table>
-        </div>
-
-        <!-- Import cycles: members + the cheapest edge to sever. Click to isolate. -->
-        <div v-if="cycles.length" class="mt-3">
-          <div
-            class="mb-1 flex items-center justify-between px-2 text-xs font-medium tracking-wide text-muted uppercase"
-          >
-            <span>cycles</span>
-            <Tooltip
-              content="Files that import each other in a loop — none can be read, tested or changed alone. The hint names the cycle edge crossing the fewest symbols: the cheapest place to break the loop. Click a row to isolate its members."
-            >
-              <span>where to cut</span>
-            </Tooltip>
-          </div>
-          <table class="w-full border-collapse text-xs">
-            <tbody>
-              <Tooltip
-                v-for="(c, i) in cycles"
-                :key="i"
-                as="tr"
-                class="cursor-pointer transition-colors hover:[&>td]:text-fg"
-                @click="emit('cycleClick', c.members)"
-              >
-                <template #content>
-                  <span class="text-purple">{{ c.label }}</span>
-                  <template v-if="c.cut"> · cheapest cut: {{ c.cut.label }}</template>
-                  <template v-else>
-                    · no narrowed edge to cut — break a whole-module import</template
-                  >
-                  . Click to isolate the members.
-                </template>
-                <td class="max-w-[190px] truncate py-0.5 pl-2 first:rounded-l">
-                  <span class="text-red">↻ </span>{{ c.label }}
-                </td>
-                <td
-                  class="max-w-[130px] truncate py-0.5 pr-2 text-right tabular-nums text-muted last:rounded-r"
-                >
-                  {{ c.cut ? c.cut.label : "—" }}
-                </td>
-              </Tooltip>
-            </tbody>
-          </table>
-        </div>
-
-        <!-- Crawl scope: prevents reading a JS-graph score as a repo-wide verdict. -->
-        <div v-if="coverage" class="mt-3">
-          <div class="mb-1 px-2 text-xs font-medium tracking-wide text-muted uppercase">scope</div>
-          <Tooltip
-            content="What the score can actually see. Only files reachable from the app's entry are measured — anything else (dead code, intentional archives, files only bound via auto-imports the crawler can't trace, and every non-JS surface like backend code or i18n JSONs) is invisible to it."
-          >
-            <p class="px-2 text-xs text-muted">
-              graph covers {{ fmt(coverage.graphFiles) }} of {{ fmt(coverage.sourceFiles) }} source
-              files ·
-              {{ coverage.sourceLoc > 0 ? pct(coverage.graphLoc / coverage.sourceLoc) : 100 }}% of
-              source LoC
-            </p>
-          </Tooltip>
-          <Collapsible
-            v-if="coverage.unreached.length"
-            :title="`${fmt(coverage.sourceFiles - coverage.graphFiles)} unreached files`"
-            :default-open="false"
-          >
-            <ul class="max-h-40 space-y-0.5 overflow-y-auto">
-              <li
-                v-for="u in coverage.unreached"
-                :key="u.file"
-                class="flex items-center justify-between gap-2 text-xs"
-                :title="u.file"
-              >
-                <span class="truncate text-muted">{{ u.file }}</span>
-                <span class="shrink-0 text-muted tabular-nums">{{ u.loc }} LoC</span>
-              </li>
-            </ul>
-          </Collapsible>
-        </div>
-      </Collapsible>
-
-      <Collapsible title="typing" :default-open="false">
+      <Collapsible title="typing" flush :default-open="false">
         <!-- LoC-weighted typing progress of the shown set. -->
         <Tooltip
           content="LoC-weighted typing progress of the shown set: green lines of code ÷ total lines of code."

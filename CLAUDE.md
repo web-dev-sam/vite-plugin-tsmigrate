@@ -22,7 +22,7 @@ A minimal, well-structured **Vite 8** plugin (hello world), developed with the
   list (depth 0 = leaves) — a type is a contract and a parent extends the
   contract of everything it imports, so migration only pays off bottom-up.
   Headless: loads the user's Vite config for the real resolver, then crawls.
-  No dev server, no port, no type-check pass, no git, no score.
+  No dev server, no port, no type-check pass, no git.
 - Built with `vp run build`: `build:layout` (cargo → `tool/layout` wasm32,
   needs the `wasm32-unknown-unknown` target), `vp pack` (tsdown →
   `dist/index.mjs`, `dist/bin.mjs` + types; entries live in
@@ -43,19 +43,14 @@ A minimal, well-structured **Vite 8** plugin (hello world), developed with the
 - `src/analysis/` — **pure core, no `vite` imports, no process spawning**;
   capabilities injected via `AnalysisHost` (`host.ts`): resolver, fs, git.
   - `graph.ts` — entry discovery + BFS crawl; barrel-collapsing edges.
-  - topology.ts — pure graph math shared by the tool and the CLI: heights
+  - `topology.ts` — pure graph math shared by the tool and the CLI: heights
     (the depth rings), strict-red propagation, grouping, Tarjan SCC
-    (`findCycles`, also used by the score), induced-subgraph assembly.
+    (`findCycles`, the CLI's cycle warning), induced-subgraph assembly.
   - `imports.ts` — regex import scanner (designated swap point: oxc-parser).
   - `analyzers/` — the extension point: `Analyzer<T>` with `cost: "inline" |
 "queued"`; currently `loc` and `blame`.
   - `cache.ts` — FactStore keyed (file, analyzer); invalidate per file
     (watcher) or per kind (blame on HEAD move).
-  - `churn.ts` — git-history churn estimator (one `git log --numstat -M` per
-    involved repo, submodule-aware; damped deleted-lines-per-month over a
-    fixed 18-month window) feeding the score's volatility term;
-    `maintainability.ts` — the score itself (typed-discount model, constants
-    - docs in `docs/maintainability-score.md`).
   - `engine.ts` — orchestration: crawl + schedule + bounded queue (4) +
     monotonic `version`; snapshots are progressive, never blocking.
 - `src/server/` —

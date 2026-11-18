@@ -31,8 +31,6 @@ export interface ComponentNode {
   kind: "vue" | "ts";
   /** Maintainable source lines — excludes `<style>`/`<svg>` blocks (null until analyzed). */
   loc: number | null;
-  /** Cyclomatic complexity — decision points in the script plus template branch directives (null until analyzed). */
-  cc: number | null;
   /** Longest import path from this node down to a leaf, within its graph. */
   height: number;
   /** True when this file OR anything in its import subtree has type errors. */
@@ -42,8 +40,8 @@ export interface ComponentNode {
   /** Blame breakdown (null until analyzed; see status.blame). */
   blame: BlameSummary | null;
   /** Per-analyzer progress — the UI renders progressively. */
-  status: { loc: AnalyzerState; cc: AnalyzerState; blame: AnalyzerState; typecheck: AnalyzerState };
-  errors: Partial<Record<"loc" | "cc" | "blame" | "typecheck", string>>;
+  status: { loc: AnalyzerState; blame: AnalyzerState; typecheck: AnalyzerState };
+  errors: Partial<Record<"loc" | "blame" | "typecheck", string>>;
 }
 
 /**
@@ -65,7 +63,7 @@ export interface ComponentEdge {
   type?: boolean;
   /**
    * True when this edge exists *only* across lazy boundaries (`import(...)`,
-   * `import.meta.glob`) — a declarative registry hop, not comprehension load.
+   * `import.meta.glob`) — a declarative registry hop. Rendered with its own dash.
    * Omitted for edges with any synchronous occurrence. `full` graph only.
    */
   lazy?: boolean;
@@ -90,151 +88,6 @@ export interface Graph {
   maxHeight: number;
 }
 
-/**
- * One maintainability hotspot — a file whose modelled change-cost dominates
- * the score. Surfaced so the number is actionable: these are where to look.
- */
-export interface MaintainabilityHotspot {
-  id: string;
-  file: string;
-  loc: number;
-  /** Cyclomatic complexity (script decision points + template branches) — drives this file's mass cost. */
-  cc: number;
-  /** Direct value imports (efferent coupling, Ce) — type-only edges excluded. */
-  fanOut: number;
-  /** Direct value importers (afferent coupling, Ca) — type-only edges excluded. */
-  fanIn: number;
-  /** Volatility ∈ [0,1] — measured deleted-lines rate, floored by shrunk structural instability. */
-  volatility: number;
-  /** Blast radius — fraction of the codebase's LoC that transitively imports this file. */
-  blastRadius: number;
-  /** True when this file sits in a structural import cycle (a non-trivial SCC over value edges). */
-  inCycle: boolean;
-  /** This file's modelled change-cost, in LoC-equivalent units. */
-  cost: number;
-}
-
-/**
- * The overhead drivers (excess coupling / change blast / complexity mass).
- * Types are a cost discount inside each driver, not a driver of their own.
- */
-export type MaintainabilityDriver = "comprehension" | "blast" | "mass";
-
-/**
- * Per-node contribution to each driver, normalised to [0,1] by the top
- * contributor in that driver. Keyed by node id (absolute module id); a file
- * absent from the map contributes zero to every driver. Powers the graph's
- * driver-highlight rings.
- */
-export type MaintainabilityContributions = Record<
-  string,
-  { comprehension: number; blast: number; mass: number }
->;
-
-/**
- * Per-node change-cost breakdown for the alt-hover detail view: the
- * LoC-equivalent overhead each driver adds to THIS file (typed discounts
- * applied — a typed file's flaws already cost only D×), plus the raw
- * structural ingredients (weighted fan-out, volatility, blast radius).
- * Present only for files that carry overhead; a file absent from the map
- * sits at its own floor. Keyed by node id.
- */
-export interface MaintainabilityBreakdown {
-  /** Excess-coupling overhead this file adds, in LoC-equivalent units (typed discount applied). */
-  comprehension: number;
-  /** Change-blast overhead, in LoC-equivalent units (dependents' typedness discount applied). */
-  blast: number;
-  /** Complexity-mass overhead (decision points × size escalator), in LoC-equivalent units (typed discount applied). */
-  mass: number;
-  /** Volatility-weighted fan-out (Ceʷ) — only volatile imports count toward it. */
-  weightedFanout: number;
-  /** Volatility ∈ [0,1] (measured deleted-lines rate, floored by shrunk structural instability). */
-  volatility: number;
-  /** Fraction of the codebase's LoC that transitively depends on this file. */
-  blastRadius: number;
-}
-/**
- * Whole-graph maintainability: the overhead of a safe change — typed code
- * discounts its flaws, the compiler carrying re-verification — mapped onto a
- * criterion-referenced scale (a typical production Vue app scores 30;
- * halving the overhead ratio is worth +25 points). Computed over the `full`
- * module graph. The full model — every term and its rationale — lives in
- * `docs/maintainability-score.md`.
- */
-export interface Maintainability {
-  /** `min(100, 30 − 25·log₂(Ω/Ω_typ))`. Capped at 100 (zero overhead), open below zero — negatives are genuine disasters. */
-  score: number;
-  /** The overhead ratio Ω = (costLoc − floorLoc)/floorLoc the mapping ran on (typed discounts included). */
-  omega: number;
-  /** Model/anchor calibration epoch — recorded so old screenshots stay interpretable across model versions. */
-  calibrationEpoch: string;
-  /** Σ LoC — the theoretical floor: every file read once, no excess coupling. */
-  floorLoc: number;
-  /** Modelled total change-cost in LoC-equivalent units (`>= floorLoc`). */
-  costLoc: number;
-  /**
-   * How the structural overhead above the floor splits, as fractions summing
-   * to 1: `comprehension` (excess volatility-weighted fan-out), `blast`
-   * (volatility × blast radius), and `mass` (decision points escalated by
-   * file size).
-   */
-  drivers: { comprehension: number; blast: number; mass: number };
-  /** Fraction of LoC trapped in import cycles (SCCs with more than one member). */
-  cycleLoc: number;
-  /** Nodes / edges the score was computed over (the `full` graph). */
-  nodes: number;
-  edges: number;
-  /** LoC-weighted typed fraction, or `null` when the type-check pass is off. */
-  typeHealth: number | null;
-  /**
-   * LoC-weighted fraction of the graph with usable git history behind its
-   * volatility, or `null` when the churn pass is off or still pending. Low
-   * coverage means volatility is mostly the structural prior — the score is
-   * valid but blind to real churn (shallow clones, fresh repos).
-   */
-  churnCoverage: number | null;
-  /**
-   * Edge-price volatility per node id ∈ [0,1] (zero-volatility nodes
-   * omitted) — the exact number the score charges an importer per import of
-   * that node, and therefore the visual weight of every drawn edge (by
-   * target).
-   */
-  volatility: Record<string, number>;
-  /** Biggest score-draggers first (highest overhead above their own floor), capped — where to look to raise the score. Files at their floor (zero overhead) never appear. */
-  hotspots: MaintainabilityHotspot[];
-  /** Per-node normalised contribution to each driver, for the driver-highlight rings. */
-  contributions: MaintainabilityContributions;
-  /** Per-node change-cost breakdown for the alt-hover detail view (files at their floor omitted). */
-  breakdown: Record<string, MaintainabilityBreakdown>;
-  /**
-   * Members of the largest import cycles (structural SCCs, biggest LoC
-   * first, capped) — the actionable list behind `cycleLoc`/`inCycle`. Cycles
-   * held together only by `import type` edges do not appear: they are legal
-   * TS and carry no runtime hazard.
-   */
-  cycles: string[][];
-}
-
-/**
- * Crawl scope: what the graph actually covers, so a JS-graph score is never
- * read as a codebase-wide verdict. `unreached` lists project source files
- * (crawlable kinds only) that no entry reaches — dead code, archives, or
- * crawler blind spots. Diagnostic only: unreached files enter neither floor
- * nor cost.
- */
-export interface CoverageSummary {
-  /** Files in the `full` module graph. */
-  graphFiles: number;
-  /** Σ maintainable LoC of graph files. */
-  graphLoc: number;
-  /** All crawlable source files under the root (graph + unreached). */
-  sourceFiles: number;
-  /** Σ maintainable LoC of all crawlable source files. */
-  sourceLoc: number;
-  /** Project-relative paths + LoC of files the crawl never reached — largest LoC first, list capped (`sourceFiles − graphFiles` is the true count). */
-  unreached: Array<{ file: string; loc: number }>;
-}
-
 export interface ComponentGraph {
   /** Monotonic server-side version; bumps on any fact or graph change. */
   version: number;
@@ -245,15 +98,11 @@ export interface ComponentGraph {
   vue: Graph;
   /** Reachable `.vue` + `.ts` modules, with symbol-resolved definition edges. */
   full: Graph;
-  /** Modelled maintainability of the `full` module graph. */
-  maintainability: Maintainability;
-  /** How much of the project's source the graph covers. */
-  coverage: CoverageSummary;
   /**
    * Generated auto-import manifests detected during the crawl (Nuxt /
    * `unplugin-vue-components` / `unplugin-auto-import`): components and
    * composables bound with no import statement. Their edges are invisible to
-   * the graph, so coupling and blast radius are UNDER-reported — the tool
+   * the graph, so depths and strict-red propagation under-report — the tool
    * shows a warning banner when non-empty. Absolute paths.
    */
   autoImportManifests: string[];

@@ -12,9 +12,7 @@ import { assertNever } from "./symbols.ts";
 
 /**
  * Edge construction: classify every import/export/dynamic/glob form of a module
- * into provenance-rich `SymbolEdge`s (edge semantics:
- * docs/maintainability-score.md "The graph"), and flatten them to wire
- * `ComponentEdge`s.
+ * into provenance-rich `SymbolEdge`s, and flatten them to wire `ComponentEdge`s.
  *
  * Two views share the classifier but differ where the semantics say they must:
  *
@@ -241,7 +239,7 @@ export function isLazyOnly(reasons: readonly DependencyReason[]): boolean {
 /**
  * Flatten to the wire. The component view stays exactly today's shape (no
  * provenance — the `vue` graph is byte-identical across this refactor); the
- * module view carries `symbols`/`via`/`lazy` for the UI and the score.
+ * module view carries `symbols`/`via`/`lazy` (greppable edge provenance).
  */
 export function toWireEdges(edges: readonly SymbolEdge[], view: GraphView): ComponentEdge[] {
   return edges.map((e) => {

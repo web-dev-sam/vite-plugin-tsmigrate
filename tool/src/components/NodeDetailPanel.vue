@@ -2,13 +2,12 @@
 import type { NodeDetail } from "../graph/render.ts";
 import Collapsible from "../ui/Collapsible.vue";
 import StatRow from "../ui/StatRow.vue";
-import Tooltip from "../ui/Tooltip.vue";
 
 /**
  * The sidebar's bottom section: structured detail of the hovered or selected
  * graph node. Carries everything the tooltip used to show beyond the terse
- * filename/LOC/links summary — status, path, per-depth stats, git blame and the
- * (formerly alt-hover) change-cost breakdown — laid out with collapsibles.
+ * filename/LOC/links summary — status, path, depth and git blame — laid out
+ * with collapsibles.
  */
 defineProps<{ detail: NodeDetail }>();
 
@@ -22,17 +21,6 @@ const statusLabel: Record<NodeDetail["status"], string> = {
   red: "red",
   analyzing: "analyzing",
 };
-
-// Volatility ∈ [0,1]: low = stable (green), high = change-prone (red).
-function volatilityTone(v: number): string {
-  if (v < 0.34) {
-    return "text-green";
-  }
-  return v < 0.67 ? "text-warn" : "text-red";
-}
-const VOLATILITY_HELP =
-  "How change-prone this file is: deleted lines per month from git history, " +
-  "floored by a structural estimate. Green = stable; red = changes often, so edits here ripple further.";
 </script>
 
 <template>
@@ -71,10 +59,6 @@ const VOLATILITY_HELP =
           <template #label><span class="text-muted">LOC</span></template>
           {{ detail.loc }}
         </StatRow>
-        <StatRow>
-          <template #label><span class="text-muted">branches</span></template>
-          {{ detail.cc }}
-        </StatRow>
         <StatRow v-if="detail.errors">
           <template #label><span class="text-muted">type errors</span></template>
           <span class="text-red">{{ detail.errors }}</span>
@@ -83,52 +67,6 @@ const VOLATILITY_HELP =
           <template #label><span class="text-muted">links</span></template>
           {{ detail.fanIn }} consume it · consumes {{ detail.fanOut }} deps
         </StatRow>
-      </div>
-    </Collapsible>
-
-    <Collapsible v-if="detail.breakdown" title="change-cost breakdown" :default-open="false">
-      <p v-if="detail.breakdown.atFloor" class="text-xs text-muted">
-        at its floor · nothing dragging the score here
-      </p>
-      <div v-else class="space-y-2.5">
-        <div v-for="d in detail.breakdown.drivers" :key="d.key">
-          <div class="flex items-center justify-between gap-2">
-            <span class="flex items-center gap-2">
-              <span
-                class="inline-block size-2 shrink-0 rounded-full"
-                :style="{ backgroundColor: d.color }"
-              />
-              {{ d.label }}
-            </span>
-            <span class="shrink-0 font-semibold tabular-nums">
-              <template v-if="d.share !== null">{{ d.share }}%</template>
-            </span>
-          </div>
-          <p class="mt-0.5 text-xs text-muted">
-            {{ d.meta
-            }}<template v-if="d.volatility !== undefined">
-              ·
-              <Tooltip as="span" :content="VOLATILITY_HELP">
-                <span class="underline decoration-dotted underline-offset-2">volatility</span>
-                <span :class="volatilityTone(d.volatility)"
-                  >&nbsp;{{ d.volatility.toFixed(2) }}</span
-                >
-              </Tooltip>
-            </template>
-          </p>
-          <p v-if="d.action" class="mt-0.5 text-xs text-accent">→ {{ d.action }}</p>
-          <ul v-if="d.items.length" class="mt-1 space-y-0.5">
-            <li
-              v-for="(item, i) in d.items"
-              :key="i"
-              class="flex items-center justify-between gap-2 pl-3 text-xs"
-              :title="item.why"
-            >
-              <span class="truncate">{{ item.name }}</span>
-              <span class="shrink-0 text-muted tabular-nums">{{ item.tail }}</span>
-            </li>
-          </ul>
-        </div>
       </div>
     </Collapsible>
 

@@ -1,6 +1,5 @@
 /**
- * Domain vocabulary for symbol-resolved dependency edges (edge semantics:
- * docs/maintainability-score.md "The graph").
+ * Domain vocabulary for symbol-resolved dependency edges.
  * Pure types + one helper, no IO. Internal to the analysis pipeline — the wire
  * (`shared/types.ts`) sees only the flattened `ComponentEdge` projection.
  */
@@ -42,7 +41,7 @@ export type WholeModuleCause =
 
 /** Why `from` depends on `to`, most precise first. A `whole` dependency can
  *  itself be type-only (`import type * as ns`, `export type * from`) — the
- *  flag keeps the wire `type` marker and the score's projections truthful. */
+ *  flag keeps the wire `type` marker truthful. */
 export type DependencyReason =
   | { readonly tag: "value"; readonly symbols: readonly SymbolName[] }
   | { readonly tag: "type"; readonly symbols: readonly SymbolName[] }

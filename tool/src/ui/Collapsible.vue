@@ -5,8 +5,8 @@ import { ref } from "vue";
  * A collapsible panel section: the same top divider as `Section` (skipped with
  * `flush` for the first block), plus a clickable caption with a rotating
  * chevron that toggles the body. An optional `#actions` slot renders to the
- * right of the caption and stays visible when collapsed (e.g. the
- * maintainability score, the blame filter checkboxes).
+ * right of the caption and stays visible when collapsed (e.g. the blame
+ * filter checkboxes).
  */
 const props = withDefaults(
   defineProps<{ title: string; defaultOpen?: boolean; flush?: boolean }>(),

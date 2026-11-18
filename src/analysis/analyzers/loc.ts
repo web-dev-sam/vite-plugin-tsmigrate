@@ -10,9 +10,9 @@ const NON_CODE_RE = /<style[\s\S]*?<\/style>|<svg[\s\S]*?<\/svg>/gi;
 /**
  * Maintainable source lines: the file's line count with `<style>` and `<svg>`
  * blocks removed. Counting them would let a big icon's vector data or a large
- * style block dominate a file's weight in the maintainability score (and its
- * graph node size) without reflecting any real maintenance surface — those
- * lines aren't edited by hand or type-checked. Cheap; computed inline.
+ * style block dominate a file's graph node size without reflecting any real
+ * maintenance surface — those lines aren't edited by hand or type-checked.
+ * Cheap; computed inline.
  */
 export const locAnalyzer: Analyzer<number> = {
   name: "loc",

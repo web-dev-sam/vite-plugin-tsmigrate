@@ -17,9 +17,9 @@ import { createAnalysisHost } from "./server/vite-adapter.ts";
  * (`ComponentNode.height`), emitted as a work list.
  *
  * Deliberately NOT the analysis engine: depth is pure topology over the crawl,
- * so this path runs no type-check pass, no git, no maintainability score. One
- * Vite config load — for the project's real resolver (aliases,
- * `import.meta.glob`, SFC scripts) — and one crawl.
+ * so this path runs no type-check pass and no git. One Vite config load — for
+ * the project's real resolver (aliases, `import.meta.glob`, SFC scripts) — and
+ * one crawl.
  *
  * stdout is a data channel: paths only, one per line, sorted. Summaries,
  * warnings, and anything the user's own config prints go to stderr.
@@ -229,10 +229,9 @@ async function collect(command: Command, host: AnalysisHost): Promise<Report> {
     facts.set(file.id, {
       kind: file.kind,
       loc: null,
-      cc: null,
       blame: null,
       typeErrors: null,
-      status: { loc: "pending", cc: "pending", blame: "pending", typecheck: "pending" },
+      status: { loc: "pending", blame: "pending", typecheck: "pending" },
       errors: {},
     });
   }

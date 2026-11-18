@@ -31,7 +31,7 @@ export interface CrawlFile {
  * `files`/`moduleEdges` are the full module view: every reachable file with
  * its kind and symbol-resolved definition edges among them — value/type
  * imports narrowed to their definers, whole-module dependencies as a single
- * edge to the module itself (docs/maintainability-score.md "The graph").
+ * edge to the module itself.
  */
 export interface CrawlResult {
   nodes: string[];
@@ -57,21 +57,6 @@ const DEFAULT_ENTRIES = [
   "./src/main.mts",
   "./src/main.mjs",
 ];
-
-/**
- * Every crawlable source file under the root — the coverage universe the
- * graph is measured against. Declaration files are excluded (not editable
- * logic); `node_modules` is excluded by the host glob. Files here that no
- * entry reaches are the "unreached" readout: dead code, intentional archives,
- * or crawler blind spots.
- */
-export async function findSourceFiles(host: AnalysisHost): Promise<string[]> {
-  const hits = await host.glob(
-    ["**/*.vue", ...Object.keys(SCRIPT_EXTS).map((ext) => `**/*${ext}`)],
-    host.root,
-  );
-  return hits.filter((hit) => !hit.endsWith(".d.ts"));
-}
 
 /**
  * Resolve the app's crawl roots, in priority order:
@@ -232,9 +217,9 @@ export async function crawlGraph(host: AnalysisHost, entries: string[]): Promise
   };
   await discover(entries);
 
-  // Known blind spot (docs/maintainability-score.md "Limits"): Nuxt / `unplugin-*`
-  // auto-imports bind components and composables with NO import statement, so
-  // their edges are invisible to the crawl and blast radius reads falsely low.
+  // Known blind spot: Nuxt / `unplugin-*` auto-imports bind components and
+  // composables with NO import statement, so their edges are invisible to the
+  // crawl (importers look smaller, depths and strict-red propagation miss them).
   // Detect the generated manifests and surface them; recovering the edges
   // (manifest + template scan) is deliberately out of scope. A hit counts only
   // when the app it belongs to was actually crawled (some reachable file lives

@@ -1,30 +1,18 @@
-import { relative } from "node:path";
 import type {
   AnalyzerState,
   BlameSummary,
   ComponentEdge,
   ComponentGraph,
-  CoverageSummary,
 } from "../shared/types.ts";
-import {
-  applyBlameAliases,
-  blameAnalyzer,
-  complexityAnalyzer,
-  locAnalyzer,
-} from "./analyzers/index.ts";
-import { FactStore, type Fact } from "./cache.ts";
-import { collectChurn, type FileChurn } from "./churn.ts";
-import { type CrawlFile, crawlGraph, findEntries, findSourceFiles } from "./graph.ts";
+import { applyBlameAliases, blameAnalyzer, locAnalyzer } from "./analyzers/index.ts";
+import { FactStore } from "./cache.ts";
+import { type CrawlFile, crawlGraph, findEntries } from "./graph.ts";
 import type { AnalysisHost } from "./host.ts";
 import { type FileFacts, makeGraph } from "./topology.ts";
-import { scoreMaintainability } from "./maintainability.ts";
 import { runTypeCheck } from "./typecheck.ts";
 
 const QUEUE_CONCURRENCY = 4;
 const TYPECHECK_KEY = "typecheck";
-const CHURN_KEY = "churn";
-/** Max unreached files shipped on the wire — totals stay exact in sourceFiles/sourceLoc. */
-const MAX_UNREACHED_WIRE = 200;
 
 /**
  * Orchestrates crawl + analyzers + cache and produces progressive snapshots:
@@ -39,8 +27,6 @@ const MAX_UNREACHED_WIRE = 200;
 export class AnalysisEngine {
   private host: AnalysisHost;
   private typeCheckCommand: string[] | false;
-  private scoreTypeRisk: boolean;
-  private churnEnabled: boolean;
   private blame: boolean;
   private blameAliases: Record<string, string>;
   private facts = new FactStore();
@@ -51,7 +37,6 @@ export class AnalysisEngine {
   private files: CrawlFile[] = [];
   private moduleEdges: ComponentEdge[] = [];
   private autoImportManifests: string[] = [];
-  private sourceFiles: string[] = [];
   private queue: Array<() => Promise<void>> = [];
   private running = 0;
   private scheduled = new Set<string>();
@@ -65,22 +50,11 @@ export class AnalysisEngine {
   private typeCheckError: string | undefined;
   private typeCheckDirty = true;
 
-  // Project-wide churn pass state (one bounded `git log` per involved repo).
-  // Null until the first pass lands — the score then reports churnCoverage
-  // null (pending) rather than a fake 0.
-  private churnStats: Map<string, FileChurn> | null = null;
-  private churnDirty = true;
-
   /**
    * @param host analysis capabilities (resolver, reader, git) injected by the
    *   caller (Vite adapter in the plugin, canned fixtures in tests).
    * @param opts.typeCheckCommand argv for the project type-check pass, or
    *   `false` to disable it (every node reported as typed). Default disabled.
-   * @param opts.scoreTypeRisk include type debt in the maintainability score;
-   *   `false` scores structure only (type-check still colors nodes).
-   * @param opts.churn enable the project churn pass (one bounded `git log
-   *   --numstat` per involved repo) feeding the score's volatility term.
-   *   Default disabled — volatility stays on the structural floor.
    * @param opts.blame enable per-file `git blame` (LoC per author) on the
    *   background queue. Default disabled — no git runs and blame stays empty.
    * @param opts.blameAliases map raw blame author names to canonical display
@@ -90,30 +64,21 @@ export class AnalysisEngine {
     host: AnalysisHost,
     {
       typeCheckCommand = false,
-      scoreTypeRisk = true,
-      churn = false,
       blame = false,
       blameAliases = {},
     }: {
       typeCheckCommand?: string[] | false;
-      scoreTypeRisk?: boolean;
-      churn?: boolean;
       blame?: boolean;
       blameAliases?: Record<string, string>;
     } = {},
   ) {
     this.host = host;
     this.typeCheckCommand = typeCheckCommand;
-    this.scoreTypeRisk = scoreTypeRisk;
-    this.churnEnabled = churn;
     this.blame = blame;
     this.blameAliases = blameAliases;
     if (typeCheckCommand === false) {
       this.typeCheckState = "ready";
       this.typeCheckDirty = false;
-    }
-    if (!churn) {
-      this.churnDirty = false;
     }
   }
 
@@ -142,10 +107,9 @@ export class AnalysisEngine {
   /**
    * Snapshot entry point. Concurrent callers (an open tool tab, a second tab,
    * any other poller) share ONE in-flight pass: `buildGraph` mutates
-   * engine-wide crawl state across awaits, so a re-entrant traversal skips the
-   * already-cleared `graphDirty` crawl, observes a half-assembled engine
-   * (empty `files`, no LoC facts), publishes a zero-node snapshot AND consumes
-   * the churn dirty flag against zero files — killing churn until HEAD moves.
+   * engine-wide crawl state across awaits, so a re-entrant traversal would
+   * skip the already-cleared `graphDirty` crawl, observe a half-assembled
+   * engine (empty `files`, no LoC facts) and publish a zero-node snapshot.
    */
   getGraph(): Promise<ComponentGraph> {
     const inFlight = this.inFlight;
@@ -182,7 +146,6 @@ export class AnalysisEngine {
       this.files = crawl.files;
       this.moduleEdges = crawl.moduleEdges;
       this.autoImportManifests = crawl.autoImportManifests;
-      this.sourceFiles = entries.length ? await findSourceFiles(this.host) : [];
       this._version++;
     }
 
@@ -193,31 +156,6 @@ export class AnalysisEngine {
     for (const { id, kind } of this.files) {
       facts.set(id, await this.fileFacts(id, kind));
     }
-
-    this.scheduleChurn();
-
-    // Crawl scope: which source files the graph covers. Unreached files get a
-    // LoC readout (cached like any fact) but enter neither floor nor cost.
-    // The shipped list is capped (largest first) — a monorepo sibling can hold
-    // thousands of unreached files; totals stay exact via sourceFiles/sourceLoc.
-    const reachable = new Set(this.files.map((file) => file.id));
-    let graphLoc = 0;
-    for (const { id } of this.files) {
-      graphLoc += facts.get(id)?.loc ?? 0;
-    }
-    const unreached: CoverageSummary["unreached"] = [];
-    let unreachedLoc = 0;
-    for (const id of this.sourceFiles) {
-      if (reachable.has(id)) {
-        continue;
-      }
-      const loc = (await this.locFact(id)).data ?? 0;
-      unreached.push({ file: relative(this.host.root, id), loc });
-      unreachedLoc += loc;
-    }
-    unreached.sort((a, b) => b.loc - a.loc || a.file.localeCompare(b.file));
-    const unreachedCount = unreached.length;
-    unreached.length = Math.min(unreached.length, MAX_UNREACHED_WIRE);
 
     const vueIds = new Set(this.vueNodes);
     const fullIds = new Set(this.files.map((file) => file.id));
@@ -230,24 +168,13 @@ export class AnalysisEngine {
       root: this.host.root,
       vue,
       full,
-      maintainability: scoreMaintainability(full, {
-        scoreTypeRisk: this.scoreTypeRisk,
-        churn: this.churnStats ?? undefined,
-      }),
-      coverage: {
-        graphFiles: this.files.length,
-        graphLoc,
-        sourceFiles: this.files.length + unreachedCount,
-        sourceLoc: graphLoc + unreachedLoc,
-        unreached,
-      },
       autoImportManifests: this.autoImportManifests,
     };
   }
 
-  /** Blame facts and churn stats are keyed to the commit, not file content. */
+  /** Blame facts are keyed to the commit, not file content. */
   private async refreshHead(): Promise<void> {
-    if (!this.blame && !this.churnEnabled) {
+    if (!this.blame) {
       return;
     }
     let sha: string | null = null;
@@ -259,9 +186,6 @@ export class AnalysisEngine {
     if (sha !== this.headSha) {
       this.headSha = sha;
       this.facts.invalidateKind(blameAnalyzer.name);
-      if (this.churnEnabled) {
-        this.churnDirty = true;
-      }
       this._version++;
     }
   }
@@ -292,37 +216,8 @@ export class AnalysisEngine {
     });
   }
 
-  /**
-   * Ensure the single project churn pass is queued when history may have
-   * moved (HEAD change; submodule HEAD moves are not tracked). Reads each
-   * graph file's LoC fact — already computed by the snapshot that scheduled
-   * this — so relative churn divides by current maintainable size.
-   */
-  private scheduleChurn(): void {
-    if (!this.churnEnabled || !this.churnDirty || this.scheduled.has(CHURN_KEY)) {
-      return;
-    }
-    this.churnDirty = false;
-    const locs = new Map<string, number>();
-    for (const { id } of this.files) {
-      locs.set(id, this.facts.get<number>(id, locAnalyzer.name)?.data ?? 0);
-    }
-    this.enqueue(CHURN_KEY, async () => {
-      try {
-        this.churnStats = await collectChurn(this.host, locs);
-      } catch {
-        this.churnStats = new Map(); // no usable history — structural floor
-      }
-      this._version++;
-    });
-  }
-
-  /**
-   * LoC fact with compute-on-miss — shared by graph nodes and the coverage
-   * readout (unreached files get a LoC without joining the graph). Cached in
-   * the fact store, so watcher invalidation applies uniformly.
-   */
-  private async locFact(id: string): Promise<Fact<number>> {
+  private async fileFacts(id: string, kind: "vue" | "ts"): Promise<FileFacts> {
+    // Inline analyzer: compute on demand during the snapshot.
     let loc = this.facts.get<number>(id, locAnalyzer.name);
     if (!loc) {
       try {
@@ -332,24 +227,6 @@ export class AnalysisEngine {
         loc = { state: "error", error: String(error) };
       }
       this.facts.set(id, locAnalyzer.name, loc);
-      this._version++;
-    }
-    return loc;
-  }
-
-  private async fileFacts(id: string, kind: "vue" | "ts"): Promise<FileFacts> {
-    // Inline analyzers: compute on demand during the snapshot.
-    const loc = await this.locFact(id);
-
-    let cc = this.facts.get<number>(id, complexityAnalyzer.name);
-    if (!cc) {
-      try {
-        const data = await complexityAnalyzer.analyze({ host: this.host, file: id });
-        cc = { state: "ready", data };
-      } catch (error) {
-        cc = { state: "error", error: String(error) };
-      }
-      this.facts.set(id, complexityAnalyzer.name, cc);
       this._version++;
     }
 
@@ -384,9 +261,6 @@ export class AnalysisEngine {
     if (loc.error) {
       errors.loc = loc.error;
     }
-    if (cc.error) {
-      errors.cc = cc.error;
-    }
     if (blame?.error) {
       errors.blame = blame.error;
     }
@@ -397,12 +271,10 @@ export class AnalysisEngine {
     return {
       kind,
       loc: loc.data ?? null,
-      cc: cc.data ?? null,
       blame: blame?.data ?? null,
       typeErrors,
       status: {
         loc: loc.state,
-        cc: cc.state,
         blame: this.blame ? (blame ? blame.state : "pending") : "ready",
         typecheck: this.typeCheckState,
       },
